@@ -1,0 +1,49 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build output
+dist/
+build/
+
+# Logs
+logs
+*.log
+*.csv
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Env & secrets
+.env
+*.env.local
+*.env.development
+*.env.production
+
+# VSCode / IDE
+.vscode/
+.idea/
+*.swp
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Electron-builder output
+/out/
+/release/
+
+# Prisma
+prisma/dev.db
+prisma/dev.db-journal
+
+# Tailwind JIT cache
+.tailwindcss/
+
+# Misc
+*.bak
