@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Tvoje utilitky – minimální */
+:root {
+  --surface: theme(colors.light.surface);
+  --border: theme(colors.light.border);
+}
+.dark :root {
+  --surface: theme(colors.dark.surface);
+  --border: theme(colors.dark.border);
+}
+
+.btn {
+  @apply inline-flex items-center gap-2 px-3 py-2 rounded border border-[--border];
+}
+.btn-primary {
+  @apply bg-accent text-white hover:opacity-90;
+}
+.input {
+  @apply w-full px-3 py-2 rounded border border-[--border] bg-white;
+}
+.card {
+  @apply rounded border border-[--border] bg-[--surface];
+}

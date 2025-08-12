@@ -1,0 +1,48 @@
+{
+  "name": "byromed-ai-app",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/electron/main.js",
+  "scripts": {
+    "dev": "node scripts/esbuild.mjs --watch",
+    "build": "node scripts/esbuild.mjs --prod",
+    "start": "electron .",
+    "postinstall": "tailwindcss -i ./styles/index.css -o ./dist/renderer/index.css"
+  },
+  "repository": {
+    "dev": "node scripts/esbuild.mjs --watch",
+    "build": "node scripts/esbuild.mjs --prod",
+    "start": "electron .",
+    "postinstall": "tailwindcss -i ./styles/index.css -o ./dist/renderer/index.css"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/AlisekTheGoat/ByroMed-AI-App/issues"
+  },
+  "homepage": "https://github.com/AlisekTheGoat/ByroMed-AI-App#readme",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.2.74",
+    "@types/react-dom": "^18.2.22",
+    "autoprefixer": "^10.4.20",
+    "electron": "^31.2.0",
+    "electron-builder": "^24.13.3",
+    "esbuild": "^0.25.8",
+    "postcss": "^8.4.41",
+    "tailwindcss": "^3.4.10",
+    "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.13.0",
+    "autoprefixer": "^10.4.21",
+    "electron-builder": "^26.0.12",
+    "postcss": "^8.5.6",
+    "prisma": "^6.13.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "tailwindcss": "^4.1.11",
+    "uuid": "^11.1.0"
+  }
+}
