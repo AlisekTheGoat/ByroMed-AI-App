@@ -4,8 +4,8 @@
   "description": "",
   "main": "dist/electron/main.js",
   "scripts": {
-    "dev": "node scripts/esbuild.mjs --watch",
-    "build": "node scripts/esbuild.mjs --prod",
+    "dev": "concurrently -k -n VITE,MAIN -c magenta,cyan \"vite\" \"cross-env NODE_ENV=development node scripts/esbuild.mjs\"",
+    "build": "vite build && cross-env NODE_ENV=production node scripts/esbuild.mjs --prod",
     "start": "electron .",
     "postinstall": "tailwindcss -i ./styles/index.css -o ./dist/renderer/index.css"
   },
@@ -26,13 +26,18 @@
     "@types/node": "^22.0.0",
     "@types/react": "^18.2.74",
     "@types/react-dom": "^18.2.22",
+    "@vitejs/plugin-react": "^5.0.0",
     "autoprefixer": "^10.4.20",
+    "concurrently": "^9.2.0",
+    "cross-env": "^10.0.0",
     "electron": "^31.2.0",
     "electron-builder": "^24.13.3",
     "esbuild": "^0.25.8",
     "postcss": "^8.4.41",
     "tailwindcss": "^3.4.10",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vite": "^7.1.2",
+    "wait-on": "^8.0.4"
   },
   "dependencies": {
     "@prisma/client": "^6.13.0",
