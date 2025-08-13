@@ -1,14 +1,18 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, dialog } from "electron";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
 import { getPrisma } from "./prisma";
 import { ensurePrismaEnv } from "./db-path";
-import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
 
 ensurePrismaEnv();
 
 let win: BrowserWindow | null = null;
 const isDev = process.env.NODE_ENV === "development";
 
+// ------------------------------------------------------------------------------------
+// Window helpers
+// ------------------------------------------------------------------------------------
 function getWin(): BrowserWindow {
   if (!win) throw new Error("No BrowserWindow yet");
   return win;
@@ -25,13 +29,12 @@ async function createWindow(): Promise<BrowserWindow> {
     },
   });
 
-  // Když se okno zavře, vrať referenci na null
   win.on("closed", () => {
     win = null;
   });
 
   if (isDev) {
-    await getWin().loadURL("http://localhost:5173"); // Vite dev server
+    await getWin().loadURL("http://localhost:5173");
     getWin().webContents.openDevTools({ mode: "detach" });
   } else {
     await getWin().loadFile(join(__dirname, "../renderer/index.html"));
@@ -43,16 +46,16 @@ async function createWindow(): Promise<BrowserWindow> {
 app.whenReady().then(createWindow);
 
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    void createWindow();
-  }
+  if (BrowserWindow.getAllWindows().length === 0) void createWindow();
 });
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-// ---------- Agent: typy a pomocníci ----------
+// ------------------------------------------------------------------------------------
+// Agent spawn helpers
+// ------------------------------------------------------------------------------------
 type AgentTask = {
   id: string;
   kind: string;
@@ -70,25 +73,46 @@ type WorkerMsg = {
   payload?: unknown;
 };
 
-// child procesy a mapování taskId -> runId/child
 const runsByTask = new Map<
   string,
   { runId: string; child: ChildProcessWithoutNullStreams }
 >();
 
-// Získání cesty k Pythonu (dev: python3 na mac/linux, py na Win; možnost přepsat env proměnnou BYROMED_PY)
 function getPythonCmd(): string {
-  if (process.env.BYROMED_PY) return process.env.BYROMED_PY;
+  if (process.env.BYROMED_PY) return process.env.BYROMED_PY!;
   return process.platform === "win32" ? "py" : "python3";
 }
 
-// Bezpečné posílání eventu do rendereru
+/** Najdi cestu k agent/agent.py pro DEV i PROD build. */
+function resolveAgentPath(): string {
+  if (isDev) {
+    // 1) dist root (když spouštíš z dist)
+    const p1 = join(app.getAppPath(), "agent", "agent.py");
+    // 2) root repa (běžný dev)
+    const p2 = join(process.cwd(), "agent", "agent.py");
+    if (existsSync(p1)) return p1;
+    if (existsSync(p2)) return p2;
+    throw new Error("agent/agent.py not found (dev)");
+  }
+  // Produkce: electron-builder -> extraResources -> process.resourcesPath/agent/agent.py
+  const p = join(process.resourcesPath, "agent", "agent.py");
+  if (existsSync(p)) return p;
+
+  // Fallback (např. asar.unpacked)
+  const p2 = join(app.getAppPath(), "agent", "agent.py");
+  if (existsSync(p2)) return p2;
+
+  throw new Error("agent/agent.py not found (prod)");
+}
+
 function emitToRenderer(e: WorkerMsg) {
   const w = BrowserWindow.getAllWindows()[0];
   w?.webContents.send("agent:event", e);
 }
 
-// ---------- IPC: spustit agenta ----------
+// ------------------------------------------------------------------------------------
+// IPC: agent:run
+// ------------------------------------------------------------------------------------
 ipcMain.handle("agent:run", async (_evt, task: AgentTask) => {
   const prisma = getPrisma();
 
@@ -99,14 +123,14 @@ ipcMain.handle("agent:run", async (_evt, task: AgentTask) => {
       kind: task.kind,
       patientId: task.patientId ?? null,
       status: "running",
-      inputMeta: task, // uložíme celé zadání pro audit
+      inputMeta: task,
     },
   });
 
-  // 2) Spawn Python workeru
+  // 2) Spawn Python agenta
   const python = getPythonCmd();
-  const workerPath = join(app.getAppPath(), "worker", "worker.py");
-  const child = spawn(python, ["-u", workerPath], {
+  const agentPath = resolveAgentPath();
+  const child = spawn(python, ["-u", agentPath], {
     stdio: ["pipe", "pipe", "pipe"],
     cwd: app.getAppPath(),
   });
@@ -123,7 +147,7 @@ ipcMain.handle("agent:run", async (_evt, task: AgentTask) => {
     ts: Date.now(),
   });
 
-  // 4) Stream stdout řádek po řádku
+  // 4) Čti stdout po řádcích a zapisuj události
   child.stdout.setEncoding("utf8");
   let buf = "";
   child.stdout.on("data", async (chunk: string) => {
@@ -148,7 +172,6 @@ ipcMain.handle("agent:run", async (_evt, task: AgentTask) => {
         }
         const { runId } = mapping;
 
-        // HELLO neukládáme, ostatní eventy ano
         if (msg.type !== "hello") {
           await prisma.agentEvent.create({
             data: {
@@ -161,10 +184,8 @@ ipcMain.handle("agent:run", async (_evt, task: AgentTask) => {
           });
         }
 
-        // Pošli do UI
         emitToRenderer({ ...msg, taskId });
 
-        // Dokončení běhu
         if (msg.type === "finished") {
           await prisma.agentRun.update({
             where: { id: runId },
@@ -187,37 +208,38 @@ ipcMain.handle("agent:run", async (_evt, task: AgentTask) => {
           });
           runsByTask.delete(taskId);
         }
-      } catch (err) {
-        // špatná JSON linka – ignoruj, případně pošli warning do UI
+      } catch {
         emitToRenderer({
           taskId: task.id,
           type: "warning",
           step: "worker.parse",
-          message: "Nelze parsovat výstup workeru",
+          message: "Nelze parsovat výstup agenta",
           ts: Date.now(),
         });
       }
     }
   });
 
-  // 5) STDERR → warning do UI (a případně do logu)
+  // 5) STDERR → warning do UI
   child.stderr.on("data", (d: Buffer) => {
     emitToRenderer({
       taskId: task.id,
       type: "warning",
-      step: "worker.stderr",
+      step: "agent.stderr",
       message: d.toString(),
       ts: Date.now(),
     });
   });
 
-  // 6) Pošli job do workeru
+  // 6) Pošli job do agenta
   child.stdin.write(JSON.stringify({ type: "job", task }) + "\n");
 
   return { ok: true, runId: run.id };
 });
 
-// ---------- IPC: cancel ----------
+// ------------------------------------------------------------------------------------
+// IPC: agent:cancel
+// ------------------------------------------------------------------------------------
 ipcMain.handle("agent:cancel", async (_evt, taskId: string) => {
   const mapping = runsByTask.get(taskId);
   if (mapping) {
@@ -243,7 +265,9 @@ ipcMain.handle("agent:cancel", async (_evt, taskId: string) => {
   return { ok: true };
 });
 
-// ---------- IPC: list posledních běhů (rychlá kontrola) ----------
+// ------------------------------------------------------------------------------------
+// IPC: agent:listRuns
+// ------------------------------------------------------------------------------------
 ipcMain.handle("agent:listRuns", async (_evt, limit = 20) => {
   const prisma = getPrisma();
   return prisma.agentRun.findMany({
@@ -251,3 +275,28 @@ ipcMain.handle("agent:listRuns", async (_evt, limit = 20) => {
     take: limit,
   });
 });
+
+// ------------------------------------------------------------------------------------
+// IPC: dialog:openFiles (audio / dokumenty)
+// ------------------------------------------------------------------------------------
+ipcMain.handle(
+  "dialog:openFiles",
+  async (_evt, args: { type: "audio" | "doc" }) => {
+    const w = BrowserWindow.getAllWindows()[0];
+    const filters =
+      args.type === "audio"
+        ? [{ name: "Audio", extensions: ["wav", "mp3", "m4a", "ogg"] }]
+        : [
+            {
+              name: "Dokumenty",
+              extensions: ["pdf", "png", "jpg", "jpeg", "webp", "tiff"],
+            },
+          ];
+
+    const res = await dialog.showOpenDialog(w!, {
+      properties: ["openFile", "multiSelections"],
+      filters,
+    });
+    return res.canceled ? [] : res.filePaths;
+  }
+);

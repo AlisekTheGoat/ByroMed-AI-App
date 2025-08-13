@@ -1,27 +1,23 @@
 {
   "name": "byromed-ai-app",
   "version": "1.0.0",
-  "description": "",
+  "description": "ByroMed AI — single-window single-agent Electron app",
   "main": "dist/electron/main.js",
   "scripts": {
     "dev": "concurrently -k -n VITE,MAIN -c magenta,cyan \"vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development node scripts/esbuild.mjs\"",
     "build": "vite build && cross-env NODE_ENV=production node scripts/esbuild.mjs --prod",
     "start": "electron .",
-    "postinstall": "tailwindcss -i ./styles/index.css -o ./dist/renderer/index.css"
+    "make": "npm run build && electron-builder"
   },
   "repository": {
-    "dev": "node scripts/esbuild.mjs --watch",
-    "build": "node scripts/esbuild.mjs --prod",
-    "start": "electron .",
-    "postinstall": "tailwindcss -i ./styles/index.css -o ./dist/renderer/index.css"
+    "type": "git",
+    "url": "https://github.com/AlisekTheGoat/ByroMed-AI-App.git"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "bugs": {
     "url": "https://github.com/AlisekTheGoat/ByroMed-AI-App/issues"
   },
   "homepage": "https://github.com/AlisekTheGoat/ByroMed-AI-App#readme",
+  "license": "ISC",
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/react": "^18.2.74",
@@ -43,12 +39,23 @@
   },
   "dependencies": {
     "@prisma/client": "^6.14.0",
-    "autoprefixer": "^10.4.21",
-    "electron-builder": "^26.0.12",
-    "postcss": "^8.5.6",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "tailwindcss": "^4.1.11",
     "uuid": "^11.1.0"
+  },
+  "build": {
+    "appId": "com.byromed.ai",
+    "asar": true,
+    "files": [
+      "dist/**",
+      "agent/**",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "agent", "to": "agent" }
+    ],
+    "mac": { "target": "dmg" },
+    "win": { "target": "nsis" },
+    "linux": { "target": "AppImage" }
   }
 }

@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-// malý helper pro styl
+type AgentEvent = Parameters<
+  Parameters<typeof window.electronAPI.onAgentEvent>[0]
+>[0];
+
 const S = {
   wrap: {
     padding: 24,
@@ -65,12 +68,7 @@ const S = {
   } as React.CSSProperties,
 };
 
-type AgentEvent = Parameters<
-  Parameters<typeof window.electronAPI.onAgentEvent>[0]
->[0];
-
 function uuid() {
-  // jednoduchý UUID v prohlížeči pro MVP
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0,
       v = c === "x" ? r : (r & 0x3) | 0x8;
@@ -82,7 +80,12 @@ export default function App() {
   // vstupy
   const [prompt, setPrompt] = useState("");
   const [patientId, setPatientId] = useState("");
-  const [templateIds, setTemplateIds] = useState("discharge_summary"); // CSV
+  const [templateIds, setTemplateIds] = useState("discharge_summary");
+  const [audioPaths, setAudioPaths] = useState<string[]>([]);
+  const [docPaths, setDocPaths] = useState<string[]>([]);
+  const [audioDurationSec, setAudioDurationSec] = useState<number | undefined>(
+    undefined
+  ); // pro ETA (můžeš odhadnout ručně)
 
   // běh
   const [events, setEvents] = useState<AgentEvent[]>([]);
@@ -90,7 +93,17 @@ export default function App() {
   const [runs, setRuns] = useState<any[]>([]);
   const taskIdRef = useRef<string | null>(null);
 
-  // progress = poslední event s progress
+  // router intentů (MVP – jednoduchá pravidla)
+  const intent = useMemo(() => {
+    const hasAudio = audioPaths.length > 0;
+    const hasDocs = docPaths.length > 0;
+    if (hasAudio && templateIds.trim()) return "transcribe_and_fill";
+    if (hasDocs && !hasAudio) return "ocr_and_summarize";
+    if (!hasAudio && !hasDocs && templateIds.trim())
+      return "template_fill_only";
+    return "analyze_request"; // neurčité; později malý LLM
+  }, [audioPaths, docPaths, templateIds]);
+
   const progress = useMemo(() => {
     const last = [...events]
       .reverse()
@@ -98,22 +111,32 @@ export default function App() {
     return last?.progress ?? (running ? 0.02 : 0);
   }, [events, running]);
 
+  const etaSec = useMemo(() => {
+    // pokud worker posílá e.payload.etaSec v eventech, najdi poslední:
+    const lastEta = [...events]
+      .reverse()
+      .find((e) => (e as any)?.payload?.etaSec);
+    return (lastEta as any)?.payload?.etaSec as number | undefined;
+  }, [events]);
+
   useEffect(() => {
     const off = window.electronAPI.onAgentEvent((e) => {
-      // filtruj na aktuální task, pokud běží
       if (taskIdRef.current && e.taskId !== taskIdRef.current) return;
       setEvents((prev) => [...prev, e]);
-
-      if (
-        e.type === "finished" ||
-        e.type === "error" ||
-        e.type === "cancelled"
-      ) {
+      if (e.type === "finished" || e.type === "error" || e.type === "cancelled")
         setRunning(false);
-      }
     });
     return () => off();
   }, []);
+
+  const pickAudio = async () => {
+    const files = await window.electronAPI.openAudioFiles();
+    if (files?.length) setAudioPaths(files);
+  };
+  const pickDocs = async () => {
+    const files = await window.electronAPI.openDocFiles();
+    if (files?.length) setDocPaths(files);
+  };
 
   const runAgent = async () => {
     const id = uuid();
@@ -130,10 +153,9 @@ export default function App() {
     ]);
     setRunning(true);
 
-    // z MVP UI vytvoříme jednoduchý "task"
     const task = {
       id,
-      kind: "transcribe_and_fill", // pro teď dummy – v routeru později odvodíme z promptu/příloh
+      kind: intent,
       patientId: patientId || undefined,
       payload: {
         prompt,
@@ -141,54 +163,95 @@ export default function App() {
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean),
+        audioPaths,
+        docPaths,
+        audioDurationSec, // nepovinné – worker může odhadnout sám
       },
     };
-
     await window.electronAPI.runAgent(task);
   };
 
   const cancelAgent = async () => {
-    if (taskIdRef.current) {
+    if (taskIdRef.current)
       await window.electronAPI.cancelAgent(taskIdRef.current);
-    }
   };
-
-  const loadRuns = async () => {
-    const r = await window.electronAPI.listAgentRuns(10);
-    setRuns(r);
-  };
+  const loadRuns = async () =>
+    setRuns(await window.electronAPI.listAgentRuns(10));
 
   return (
     <div style={S.wrap}>
       <h1 style={S.h1}>ByroMed AI — Agent Playground</h1>
 
-      {/* Vstupy */}
       <div style={S.card}>
         <label style={S.label}>Požadavek lékaře</label>
         <textarea
           style={{ ...S.input, minHeight: 120 }}
-          placeholder="Např.: Vytvoř propouštěcí zprávu pro pacienta Novák podle šablony discharge_summary…"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
+          placeholder="Např.: Vytvoř propouštěcí zprávu pro pacienta Novák dle šablony discharge_summary…"
         />
+
         <div style={{ ...S.row, marginTop: 8 }}>
           <div style={{ flex: 1, minWidth: 220 }}>
-            <label style={S.label}>Patient ID (volitelné)</label>
+            <label style={S.label}>Patient ID (volit.)</label>
             <input
               style={S.input}
-              placeholder="uuid pacienta"
               value={patientId}
               onChange={(e) => setPatientId(e.target.value)}
+              placeholder="uuid pacienta"
             />
           </div>
           <div style={{ flex: 1, minWidth: 220 }}>
             <label style={S.label}>Template IDs (CSV)</label>
             <input
               style={S.input}
-              placeholder="např.: discharge_summary, lekarska_zprava_nalez"
               value={templateIds}
               onChange={(e) => setTemplateIds(e.target.value)}
+              placeholder="discharge_summary, lekarska_zprava_nalez"
             />
+          </div>
+        </div>
+
+        <div style={{ ...S.row, marginTop: 8 }}>
+          <button style={S.btn} onClick={pickAudio}>
+            Vybrat audio
+          </button>
+          <button style={S.btn} onClick={pickDocs}>
+            Vybrat dokumenty
+          </button>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>
+            {audioPaths.length
+              ? `Audio: ${audioPaths.length} soubor(ů)`
+              : "Audio: nic nevybráno"}{" "}
+            ·{" "}
+            {docPaths.length
+              ? `Dokumenty: ${docPaths.length}`
+              : "Dokumenty: nic nevybráno"}
+          </div>
+        </div>
+
+        <div style={{ ...S.row, marginTop: 6 }}>
+          <div>
+            <label style={S.label}>
+              Odhad délky audia (s) – volitelně pro ETA
+            </label>
+            <input
+              type="number"
+              style={{ ...S.input, width: 180 }}
+              value={audioDurationSec ?? ""}
+              onChange={(e) =>
+                setAudioDurationSec(
+                  e.target.value ? Number(e.target.value) : undefined
+                )
+              }
+              placeholder="např. 90"
+            />
+          </div>
+          <div>
+            <b>Intent:</b> <code>{intent}</code>
+          </div>
+          <div>
+            <b>ETA:</b> {etaSec ? `${Math.ceil(etaSec)} s` : "—"}
           </div>
         </div>
 
@@ -207,7 +270,6 @@ export default function App() {
           </button>
         </div>
 
-        {/* Progress */}
         <div style={{ marginTop: 12 }}>
           <div style={S.bar}>
             <div style={S.barIn(progress)} />
@@ -218,7 +280,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Live event log */}
       <div style={S.card}>
         <div style={{ fontWeight: 600, marginBottom: 6 }}>Event log</div>
         <ul style={{ maxHeight: 260, overflow: "auto", fontSize: 13 }}>
@@ -230,17 +291,18 @@ export default function App() {
               <span style={{ opacity: 0.6 }}>
                 {new Date(e.ts ?? Date.now()).toLocaleTimeString()}
               </span>{" "}
-              — <b>{e.step ?? e.type}</b>
-              {e.message ? ` – ${e.message}` : ""}
+              — <b>{e.step ?? e.type}</b> {e.message ? ` – ${e.message}` : ""}{" "}
               {typeof e.progress === "number"
                 ? ` (${Math.round((e.progress || 0) * 100)}%)`
+                : ""}{" "}
+              {(e as any)?.payload?.etaSec
+                ? ` ETA: ${Math.ceil((e as any).payload.etaSec)}s`
                 : ""}
             </li>
           ))}
         </ul>
       </div>
 
-      {/* Historie běhů (posledních 10) */}
       <div style={S.card}>
         <div style={{ fontWeight: 600, marginBottom: 6 }}>Poslední běhy</div>
         <ul style={{ fontSize: 13 }}>
