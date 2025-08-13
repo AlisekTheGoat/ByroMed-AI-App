@@ -4,7 +4,7 @@
   "description": "",
   "main": "dist/electron/main.js",
   "scripts": {
-    "dev": "concurrently -k -n VITE,MAIN -c magenta,cyan \"vite\" \"cross-env NODE_ENV=development node scripts/esbuild.mjs\"",
+    "dev": "concurrently -k -n VITE,MAIN -c magenta,cyan \"vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development node scripts/esbuild.mjs\"",
     "build": "vite build && cross-env NODE_ENV=production node scripts/esbuild.mjs --prod",
     "start": "electron .",
     "postinstall": "tailwindcss -i ./styles/index.css -o ./dist/renderer/index.css"
@@ -28,6 +28,7 @@
     "@types/react-dom": "^18.2.22",
     "@vitejs/plugin-react": "^5.0.0",
     "autoprefixer": "^10.4.20",
+    "chokidar": "^4.0.3",
     "concurrently": "^9.2.0",
     "cross-env": "^10.0.0",
     "electron": "^31.2.0",

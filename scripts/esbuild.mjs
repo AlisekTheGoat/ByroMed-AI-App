@@ -1,5 +1,7 @@
-import { build, context } from "esbuild";
+// scripts/esbuild.mjs
+import { build } from "esbuild";
 import { spawn } from "node:child_process";
+import chokidar from "chokidar";
 import { resolve } from "node:path";
 import fs from "node:fs";
 
@@ -30,48 +32,61 @@ const preload = {
   external: ["electron"],
 };
 
-async function dev() {
+async function buildAll() {
   fs.mkdirSync(resolve("dist/electron"), { recursive: true });
+  await build(main);
+  await build(preload);
+}
 
-  const [ctxMain, ctxPreload] = await Promise.all([
-    context(main),
-    context(preload),
-  ]);
-  await Promise.all([ctxMain.watch(), ctxPreload.watch()]);
+let electron;
 
-  let electron;
-  const startElectron = () => {
-    if (electron) electron.kill("SIGTERM");
-    electron = spawn(
-      process.platform === "win32" ? "npx.cmd" : "npx",
-      ["electron", "."],
-      {
-        stdio: "inherit",
-        env: { ...process.env, NODE_ENV: "development" },
-      }
-    );
-  };
+/** Spustí/restartne Electron */
+function restartElectron() {
+  if (electron) electron.kill("SIGTERM");
+  electron = spawn(
+    process.platform === "win32" ? "npx.cmd" : "npx",
+    ["electron", "."],
+    {
+      stdio: "inherit",
+      env: { ...process.env, NODE_ENV: "development" },
+    }
+  );
+}
 
-  let ready = 0;
-  const tryStart = () => {
-    if (++ready === 2) startElectron();
-  };
-  ctxMain.onEnd(tryStart);
-  ctxPreload.onEnd(tryStart);
+async function dev() {
+  await buildAll(); // 1) první build
+  restartElectron(); // 2) spustit Electron
 
-  // Restart při změně main/preload
-  ctxMain.onEnd(startElectron);
-  ctxPreload.onEnd(startElectron);
+  // 3) sledujeme TS zdroje, rebuild + restart Electronu
+  const srcWatcher = chokidar.watch(["electron/**/*.ts"], {
+    ignoreInitial: true,
+  });
+  srcWatcher.on("change", async () => {
+    try {
+      await buildAll();
+      restartElectron();
+    } catch (e) {
+      console.error("[esbuild] build error", e);
+    }
+  });
+
+  // Pro jistotu sleduj i samotné výstupy (kdyby něco jiného přepsalo dist)
+  const outWatcher = chokidar.watch(
+    ["dist/electron/main.js", "dist/electron/preload.js"],
+    { ignoreInitial: true }
+  );
+  outWatcher.on("change", () => restartElectron());
 
   process.on("SIGINT", () => {
+    srcWatcher.close();
+    outWatcher.close();
     if (electron) electron.kill("SIGINT");
     process.exit(0);
   });
 }
 
 async function prod() {
-  await build(main);
-  await build(preload);
+  await buildAll();
   console.log("Esbuild (main/preload) done.");
 }
 
