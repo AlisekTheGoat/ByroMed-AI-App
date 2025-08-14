@@ -9,5 +9,5 @@
     "types": ["node", "react", "react-dom"],
     "baseUrl": "."
   },
-  "include": ["electron", "src"]
+  "include": ["electron", "src", "dist/electron/main.js", "dist/electron/preload.js"]
 }

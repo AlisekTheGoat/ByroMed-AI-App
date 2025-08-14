@@ -1,302 +1,310 @@
+// electron/main.ts
 import { app, BrowserWindow, ipcMain, dialog } from "electron";
-import { join } from "node:path";
-import { existsSync } from "node:fs";
-import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
-import { getPrisma } from "./prisma";
-import { ensurePrismaEnv } from "./db-path";
+import path from "path";
+import fs from "fs";
+import { spawn, ChildProcessWithoutNullStreams } from "child_process";
+import os from "os";
+import type { OpenDialogReturnValue, OpenDialogOptions } from "electron";
 
-ensurePrismaEnv();
+// --- pomocné flagy/cesty ---
+const IS_DEV = !!process.env.VITE_DEV_SERVER_URL || !app.isPackaged;
 
-let win: BrowserWindow | null = null;
-const isDev = process.env.NODE_ENV === "development";
+// Kde je preload? (v dev: __dirname = dist/electron; v prod: resources/dist/electron)
+const PRELOAD_JS = app.isPackaged
+  ? path.join(process.resourcesPath, "dist", "electron", "preload.js")
+  : path.join(__dirname, "preload.js");
 
-// ------------------------------------------------------------------------------------
-// Window helpers
-// ------------------------------------------------------------------------------------
-function getWin(): BrowserWindow {
-  if (!win) throw new Error("No BrowserWindow yet");
-  return win;
+// Najdi buildnutý renderer index.html (prod fallback)
+function resolveRendererIndex(): string {
+  const candidates = [
+    // běžné build umístění
+    path.join(process.cwd(), "dist", "renderer", "index.html"),
+    // když se main.js spouští z dist/electron
+    path.join(__dirname, "..", "renderer", "index.html"),
+    // balíček (resourcesPath)
+    path.join(process.resourcesPath, "dist", "renderer", "index.html"),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  throw new Error(
+    `Renderer index.html nebyl nalezen.\nHledal jsem:\n${candidates
+      .map((p) => " - " + p)
+      .join("\n")}\n` +
+      `Tipy: 1) Dev: spusť Vite a nastav VITE_DEV_SERVER_URL, 2) Prod: nejdřív buildni renderer (vite build).`
+  );
 }
 
-async function createWindow(): Promise<BrowserWindow> {
-  win = new BrowserWindow({
+type AgentStatus = "running" | "success" | "error" | "canceled";
+type RunRecord = {
+  id: string;
+  status: AgentStatus;
+  startedAt: number;
+  finishedAt?: number;
+  child?: ChildProcessWithoutNullStreams;
+};
+type AgentEvent = {
+  id: string;
+  runId: string;
+  ts: number;
+  step:
+    | "hello"
+    | "router"
+    | "asr.check"
+    | "asr.transcribe"
+    | "ocr.check"
+    | "ocr.parse"
+    | "templating"
+    | "export"
+    | "finished"
+    | "error"
+    | "canceled";
+  level: "info" | "success" | "warning" | "error";
+  message: string;
+  progress?: number;
+  payload?: Record<string, unknown>;
+};
+
+const runs = new Map<string, RunRecord>();
+const rid = () => Math.random().toString(36).slice(2, 10);
+const pythonCmd = () =>
+  process.env.BYROMED_PYTHON_BIN ||
+  (os.platform() === "win32" ? "python" : "python3");
+const agentPath = () =>
+  app.isPackaged
+    ? path.join(process.resourcesPath, "agent", "agent.py")
+    : path.join(process.cwd(), "agent", "agent.py");
+
+function broadcast(ev: AgentEvent) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send("agent:event", ev);
+  }
+}
+
+async function createWindow() {
+  const win = new BrowserWindow({
     width: 1200,
     height: 800,
+    show: true,
+    backgroundColor: "#ffffff",
     webPreferences: {
-      preload: join(__dirname, "preload.js"),
+      preload: PRELOAD_JS,
+      nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
+      webSecurity: true,
     },
   });
 
-  win.on("closed", () => {
-    win = null;
+  // Diagnostika načítání
+  win.webContents.on("did-fail-load", (_e, code, desc, url) => {
+    console.error("did-fail-load:", code, desc, url);
   });
+  win.webContents.on(
+    "console-message",
+    (_e, level, message, line, sourceId) => {
+      console.log(`[renderer:${level}] ${message} (${sourceId}:${line})`);
+    }
+  );
 
-  if (isDev) {
-    await getWin().loadURL("http://localhost:5173");
-    getWin().webContents.openDevTools({ mode: "detach" });
-  } else {
-    await getWin().loadFile(join(__dirname, "../renderer/index.html"));
+  const devUrlRaw = process.env.VITE_DEV_SERVER_URL; // např. http://localhost:5173
+  const devUrl = devUrlRaw
+    ? devUrlRaw.endsWith("/")
+      ? devUrlRaw
+      : devUrlRaw + "/"
+    : null;
+
+  try {
+    if (devUrl) {
+      // DEV: explicitně načti index.html (zabrání 404 na rootu)
+      await win.loadURL(devUrl + "index.html");
+      win.webContents.openDevTools({ mode: "detach" });
+    } else {
+      // PROD: načti build
+      const indexFile = resolveRendererIndex();
+      await win.loadFile(indexFile);
+    }
+  } catch (err) {
+    console.error("Renderer load failed:", err);
+    // Zobraz okno s chybou (užitečné při packagi)
+    await win.loadURL(
+      "data:text/plain;charset=UTF-8," +
+        encodeURIComponent(
+          "Nepodařilo se načíst renderer.\n\n" +
+            String(err instanceof Error ? err.message : err)
+        )
+    );
   }
-
-  return getWin();
 }
 
-app.whenReady().then(createWindow);
+// --- Python worker piping ---
+function setupChildPipe(runId: string, child: ChildProcessWithoutNullStreams) {
+  let buf = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    buf += chunk;
+    let idx: number;
+    while ((idx = buf.indexOf("\n")) >= 0) {
+      const raw = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!raw) continue;
+      try {
+        const msg = JSON.parse(raw);
+        const ev: AgentEvent = {
+          id: msg.id || rid(),
+          runId,
+          ts: Date.now(),
+          step: msg.step,
+          level: msg.level || "info",
+          message: msg.message || "",
+          progress: typeof msg.progress === "number" ? msg.progress : undefined,
+          payload: msg.payload,
+        };
+        broadcast(ev);
+        if (ev.step === "finished" || ev.step === "error") {
+          const rec = runs.get(runId);
+          if (rec) {
+            rec.status = ev.step === "finished" ? "success" : "error";
+            rec.finishedAt = Date.now();
+            runs.set(runId, rec);
+          }
+        }
+      } catch {
+        console.error("Invalid agent line:", raw);
+      }
+    }
+  });
 
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) void createWindow();
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) =>
+    console.warn("[agent stderr]", chunk)
+  );
+
+  child.on("exit", (code, signal) => {
+    const rec = runs.get(runId);
+    if (!rec) return;
+    if (rec.status === "running") {
+      rec.status = "error";
+      rec.finishedAt = Date.now();
+      runs.set(runId, rec);
+      broadcast({
+        id: rid(),
+        runId,
+        ts: Date.now(),
+        step: signal === "SIGTERM" ? "canceled" : "error",
+        level: signal === "SIGTERM" ? "warning" : "error",
+        message:
+          signal === "SIGTERM"
+            ? "Běh zrušen uživatelem."
+            : `Agent ukončen (code=${code}, signal=${signal ?? "none"})`,
+      });
+    }
+  });
+}
+
+function startAgent(
+  runId: string,
+  input: { text?: string; language?: string }
+) {
+  const child = spawn(pythonCmd(), [agentPath()], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, BYROMED_RUN_ID: runId },
+  });
+  setupChildPipe(runId, child);
+  child.stdin.write(
+    JSON.stringify({
+      runId,
+      text: input.text ?? null,
+      language: input.language ?? "auto",
+    }) + "\n"
+  );
+  child.stdin.end();
+  runs.set(runId, {
+    id: runId,
+    status: "running",
+    startedAt: Date.now(),
+    child,
+  });
+  return child;
+}
+
+// --- IPC ---
+ipcMain.handle(
+  "agent:run",
+  async (_evt, input: { text?: string; language?: string }) => {
+    const runId = rid();
+    startAgent(runId, input ?? {});
+    return { runId };
+  }
+);
+
+ipcMain.handle("agent:cancel", async (_evt, runId: string) => {
+  const rec = runs.get(runId);
+  if (!rec?.child) return;
+  try {
+    rec.child.kill("SIGTERM");
+    rec.status = "canceled";
+    rec.finishedAt = Date.now();
+    runs.set(runId, rec);
+    broadcast({
+      id: rid(),
+      runId,
+      ts: Date.now(),
+      step: "canceled",
+      level: "warning",
+      message: "Běh zrušen uživatelem.",
+    });
+  } catch (e) {
+    console.warn("Cancel failed", e);
+  }
 });
+
+ipcMain.handle("agent:listRuns", async () =>
+  Array.from(runs.values()).map((r) => ({
+    id: r.id,
+    status: r.status,
+    startedAt: r.startedAt,
+    finishedAt: r.finishedAt,
+  }))
+);
+
+ipcMain.handle("dialog:openFiles", async (): Promise<string[]> => {
+  const options: OpenDialogOptions = {
+    properties: ["openFile", "multiSelections"],
+    filters: [
+      {
+        name: "Podporované",
+        extensions: [
+          "mp3",
+          "wav",
+          "m4a",
+          "aac",
+          "ogg",
+          "pdf",
+          "png",
+          "jpg",
+          "jpeg",
+          "webp",
+        ],
+      },
+    ],
+  };
+
+  const result: OpenDialogReturnValue = await dialog.showOpenDialog(options);
+  return result.canceled ? [] : result.filePaths;
+});
+
+app.whenReady().then(createWindow);
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-// ------------------------------------------------------------------------------------
-// Agent spawn helpers
-// ------------------------------------------------------------------------------------
-type AgentTask = {
-  id: string;
-  kind: string;
-  payload?: any;
-  patientId?: string;
-};
-
-type WorkerMsg = {
-  type: "hello" | "event" | "finished" | "error" | "cancelled" | "warning";
-  taskId?: string;
-  step?: string;
-  message?: string;
-  progress?: number;
-  ts?: number;
-  payload?: unknown;
-};
-
-const runsByTask = new Map<
-  string,
-  { runId: string; child: ChildProcessWithoutNullStreams }
->();
-
-function getPythonCmd(): string {
-  if (process.env.BYROMED_PY) return process.env.BYROMED_PY!;
-  return process.platform === "win32" ? "py" : "python3";
-}
-
-/** Najdi cestu k agent/agent.py pro DEV i PROD build. */
-function resolveAgentPath(): string {
-  if (isDev) {
-    // 1) dist root (když spouštíš z dist)
-    const p1 = join(app.getAppPath(), "agent", "agent.py");
-    // 2) root repa (běžný dev)
-    const p2 = join(process.cwd(), "agent", "agent.py");
-    if (existsSync(p1)) return p1;
-    if (existsSync(p2)) return p2;
-    throw new Error("agent/agent.py not found (dev)");
-  }
-  // Produkce: electron-builder -> extraResources -> process.resourcesPath/agent/agent.py
-  const p = join(process.resourcesPath, "agent", "agent.py");
-  if (existsSync(p)) return p;
-
-  // Fallback (např. asar.unpacked)
-  const p2 = join(app.getAppPath(), "agent", "agent.py");
-  if (existsSync(p2)) return p2;
-
-  throw new Error("agent/agent.py not found (prod)");
-}
-
-function emitToRenderer(e: WorkerMsg) {
-  const w = BrowserWindow.getAllWindows()[0];
-  w?.webContents.send("agent:event", e);
-}
-
-// ------------------------------------------------------------------------------------
-// IPC: agent:run
-// ------------------------------------------------------------------------------------
-ipcMain.handle("agent:run", async (_evt, task: AgentTask) => {
-  const prisma = getPrisma();
-
-  // 1) Založ běh v DB
-  const run = await prisma.agentRun.create({
-    data: {
-      taskId: task.id,
-      kind: task.kind,
-      patientId: task.patientId ?? null,
-      status: "running",
-      inputMeta: task,
-    },
-  });
-
-  // 2) Spawn Python agenta
-  const python = getPythonCmd();
-  const agentPath = resolveAgentPath();
-  const child = spawn(python, ["-u", agentPath], {
-    stdio: ["pipe", "pipe", "pipe"],
-    cwd: app.getAppPath(),
-  });
-
-  runsByTask.set(task.id, { runId: run.id, child });
-
-  // 3) Pošli do UI "started"
-  emitToRenderer({
-    taskId: task.id,
-    type: "event",
-    step: "agent.started",
-    message: "Agent startuje…",
-    progress: 0,
-    ts: Date.now(),
-  });
-
-  // 4) Čti stdout po řádcích a zapisuj události
-  child.stdout.setEncoding("utf8");
-  let buf = "";
-  child.stdout.on("data", async (chunk: string) => {
-    buf += chunk;
-    let idx: number;
-    while ((idx = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, idx).trim();
-      buf = buf.slice(idx + 1);
-      if (!line) continue;
-
-      try {
-        const msg = JSON.parse(line) as WorkerMsg;
-        const taskId = msg.taskId ?? task.id;
-        const mapping = runsByTask.get(taskId);
-        if (!mapping) {
-          emitToRenderer({
-            ...msg,
-            type: msg.type ?? "warning",
-            message: (msg.message ?? "") + " (no mapping)",
-          });
-          continue;
-        }
-        const { runId } = mapping;
-
-        if (msg.type !== "hello") {
-          await prisma.agentEvent.create({
-            data: {
-              runId,
-              ts: new Date(msg.ts ?? Date.now()),
-              step: msg.step ?? msg.type,
-              message: msg.message ?? null,
-              progress: typeof msg.progress === "number" ? msg.progress : null,
-            },
-          });
-        }
-
-        emitToRenderer({ ...msg, taskId });
-
-        if (msg.type === "finished") {
-          await prisma.agentRun.update({
-            where: { id: runId },
-            data: {
-              status: "ok",
-              finishedAt: new Date(),
-              resultMeta: msg.payload ?? {},
-            },
-          });
-          runsByTask.delete(taskId);
-        } else if (msg.type === "error" || msg.type === "cancelled") {
-          await prisma.agentRun.update({
-            where: { id: runId },
-            data: {
-              status: msg.type === "error" ? "error" : "cancelled",
-              finishedAt: new Date(),
-              errorMessage: msg.message ?? null,
-              resultMeta: msg.payload ?? {},
-            },
-          });
-          runsByTask.delete(taskId);
-        }
-      } catch {
-        emitToRenderer({
-          taskId: task.id,
-          type: "warning",
-          step: "worker.parse",
-          message: "Nelze parsovat výstup agenta",
-          ts: Date.now(),
-        });
-      }
-    }
-  });
-
-  // 5) STDERR → warning do UI
-  child.stderr.on("data", (d: Buffer) => {
-    emitToRenderer({
-      taskId: task.id,
-      type: "warning",
-      step: "agent.stderr",
-      message: d.toString(),
-      ts: Date.now(),
-    });
-  });
-
-  // 6) Pošli job do agenta
-  child.stdin.write(JSON.stringify({ type: "job", task }) + "\n");
-
-  return { ok: true, runId: run.id };
+app.on("activate", async () => {
+  if (BrowserWindow.getAllWindows().length === 0) await createWindow();
 });
 
-// ------------------------------------------------------------------------------------
-// IPC: agent:cancel
-// ------------------------------------------------------------------------------------
-ipcMain.handle("agent:cancel", async (_evt, taskId: string) => {
-  const mapping = runsByTask.get(taskId);
-  if (mapping) {
-    mapping.child.kill("SIGTERM");
-    runsByTask.delete(taskId);
-    const prisma = getPrisma();
-    await prisma.agentRun.update({
-      where: { id: mapping.runId },
-      data: {
-        status: "cancelled",
-        finishedAt: new Date(),
-        errorMessage: "Zrušeno uživatelem",
-      },
-    });
-    emitToRenderer({
-      taskId,
-      type: "cancelled",
-      step: "agent.cancelled",
-      message: "Zrušeno uživatelem",
-      ts: Date.now(),
-    });
-  }
-  return { ok: true };
+// Zachytávání neodchycených promise (zabrání UnhandledPromiseRejectionWarning)
+process.on("unhandledRejection", (reason) => {
+  console.error("UnhandledRejection:", reason);
 });
-
-// ------------------------------------------------------------------------------------
-// IPC: agent:listRuns
-// ------------------------------------------------------------------------------------
-ipcMain.handle("agent:listRuns", async (_evt, limit = 20) => {
-  const prisma = getPrisma();
-  return prisma.agentRun.findMany({
-    orderBy: { startedAt: "desc" },
-    take: limit,
-  });
-});
-
-// ------------------------------------------------------------------------------------
-// IPC: dialog:openFiles (audio / dokumenty)
-// ------------------------------------------------------------------------------------
-ipcMain.handle(
-  "dialog:openFiles",
-  async (_evt, args: { type: "audio" | "doc" }) => {
-    const w = BrowserWindow.getAllWindows()[0];
-    const filters =
-      args.type === "audio"
-        ? [{ name: "Audio", extensions: ["wav", "mp3", "m4a", "ogg"] }]
-        : [
-            {
-              name: "Dokumenty",
-              extensions: ["pdf", "png", "jpg", "jpeg", "webp", "tiff"],
-            },
-          ];
-
-    const res = await dialog.showOpenDialog(w!, {
-      properties: ["openFile", "multiSelections"],
-      filters,
-    });
-    return res.canceled ? [] : res.filePaths;
-  }
-);

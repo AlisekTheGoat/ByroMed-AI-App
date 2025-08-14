@@ -1,45 +1,60 @@
+// electron/preload.ts
 import { contextBridge, ipcRenderer } from "electron";
 
-type Unsubscribe = () => void;
+// Pozn.: Držíme typy jednoduché (kompatibilní s tvým src/types.ts)
+type AgentLevel = "info" | "success" | "warning" | "error";
+type AgentStep =
+  | "hello"
+  | "router"
+  | "asr.check"
+  | "asr.transcribe"
+  | "ocr.check"
+  | "ocr.parse"
+  | "templating"
+  | "export"
+  | "finished"
+  | "error"
+  | "canceled";
 
-type AgentTask = {
+export type AgentEvent = {
   id: string;
-  kind: string; // např. "transcribe_and_fill" | "form_fill" | "ocr_and_summarize"
-  patientId?: string;
-  payload?: any; // libovolné doplňky (audioPath, filePaths, templateIds, ...)
+  runId: string;
+  ts: number;
+  step: AgentStep;
+  level: AgentLevel;
+  message: string;
+  progress?: number;
+  payload?: Record<string, unknown>;
 };
 
-type AgentEvent = {
-  taskId: string;
-  type: "hello" | "event" | "finished" | "error" | "cancelled" | "warning";
-  step?: string;
-  message?: string;
-  progress?: number; // 0..1
-  ts?: number;
-  payload?: unknown;
+export type AgentRunSummary = {
+  id: string;
+  status: "running" | "success" | "error" | "canceled";
+  startedAt: number;
+  finishedAt?: number;
+  title?: string;
 };
 
-const agentApi = {
-  runAgent: (task: AgentTask) => ipcRenderer.invoke("agent:run", task),
-  cancelAgent: (taskId: string) => ipcRenderer.invoke("agent:cancel", taskId),
-  listAgentRuns: (limit?: number) =>
-    ipcRenderer.invoke("agent:listRuns", limit),
-
-  onAgentEvent: (cb: (e: AgentEvent) => void): Unsubscribe => {
-    const handler = (_: unknown, e: AgentEvent) => cb(e);
-    ipcRenderer.on("agent:event", handler);
-    return () => ipcRenderer.removeListener("agent:event", handler);
-  },
-  openAudioFiles: () =>
-    ipcRenderer.invoke("dialog:openFiles", { type: "audio" }),
-  openDocFiles: () => ipcRenderer.invoke("dialog:openFiles", { type: "doc" }),
-};
-
-contextBridge.exposeInMainWorld("electronAPI", agentApi);
-export type ElectronAPI = typeof agentApi;
-
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
+function onEvent(cb: (e: AgentEvent) => void) {
+  const channel = "agent:event";
+  const handler = (_: Electron.IpcRendererEvent, ev: AgentEvent) => cb(ev);
+  ipcRenderer.on(channel, handler);
+  return () => ipcRenderer.removeListener(channel, handler);
 }
+
+contextBridge.exposeInMainWorld("api", {
+  agent: {
+    run(input: { text?: string; language?: string }) {
+      return ipcRenderer.invoke("agent:run", input) as Promise<{
+        runId: string;
+      }>;
+    },
+    cancel(runId: string) {
+      return ipcRenderer.invoke("agent:cancel", runId) as Promise<void>;
+    },
+    listRuns() {
+      return ipcRenderer.invoke("agent:listRuns") as Promise<AgentRunSummary[]>;
+    },
+    onEvent,
+  },
+});
