@@ -192,7 +192,7 @@ ipcMain.handle("agent:run", async (_evt, task: AgentTask) => {
             data: {
               status: "ok",
               finishedAt: new Date(),
-              resultMeta: msg.payload ?? null,
+              resultMeta: msg.payload ?? {},
             },
           });
           runsByTask.delete(taskId);
@@ -203,7 +203,7 @@ ipcMain.handle("agent:run", async (_evt, task: AgentTask) => {
               status: msg.type === "error" ? "error" : "cancelled",
               finishedAt: new Date(),
               errorMessage: msg.message ?? null,
-              resultMeta: msg.payload ?? null,
+              resultMeta: msg.payload ?? {},
             },
           });
           runsByTask.delete(taskId);
