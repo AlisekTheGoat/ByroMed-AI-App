@@ -6,8 +6,27 @@
     "jsx": "react-jsx",
     "strict": true,
     "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "lib": ["dom", "dom.iterable", "esnext"],
     "types": ["node", "react", "react-dom"],
-    "baseUrl": "."
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"],
+      "@components/*": ["./src/components/*"],
+      "@hooks/*": ["./src/hooks/*"],
+      "@styles/*": ["./src/styles/*"],
+      "@utils/*": ["./src/utils/*"]
+    }
   },
-  "include": ["electron", "src", "dist/electron/main.js", "dist/electron/preload.js"]
+  "include": [
+    "electron",
+    "src",
+    "dist/electron/main.js",
+    "dist/electron/preload.js",
+    "vite.config.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
 }
