@@ -238,6 +238,17 @@ ipcMain.handle(
   }
 );
 
+// Placeholder for Google sync (OAuth and API calls to be implemented).
+// This endpoint is designed to be extended with real Google Calendar sync logic.
+ipcMain.handle(
+  "calendar:google:sync",
+  async (_evt, _options?: { direction?: "push" | "pull" | "two-way" }) => {
+    // TODO: Implement Google OAuth flow and sync logic.
+    // Returning a simple acknowledgment for now.
+    return { ok: true, message: "Google sync placeholder executed" } as const;
+  }
+);
+
 ipcMain.handle("agent:cancel", async (_evt, runId: string) => {
   const rec = runs.get(runId);
   if (!rec?.child) return;
@@ -293,6 +304,160 @@ ipcMain.handle("dialog:openFiles", async (): Promise<string[]> => {
   const result: OpenDialogReturnValue = await dialog.showOpenDialog(options);
   return result.canceled ? [] : result.filePaths;
 });
+
+// ---- Documents storage (userData/documents) ----
+function ensureDocsDir(): string {
+  const dir = path.join(app.getPath("userData"), "documents");
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+type StoredDoc = {
+  name: string;
+  path: string;
+  size: number;
+  addedAt: number;
+};
+
+ipcMain.handle("docs:list", async (): Promise<StoredDoc[]> => {
+  const dir = ensureDocsDir();
+  const files = fs.readdirSync(dir);
+  return files.map((name) => {
+    const p = path.join(dir, name);
+    const st = fs.statSync(p);
+    return { name, path: p, size: st.size, addedAt: st.mtimeMs };
+  });
+});
+
+ipcMain.handle("docs:save", async (_evt, filePaths: string[]): Promise<StoredDoc[]> => {
+  const dir = ensureDocsDir();
+  const saved: StoredDoc[] = [];
+  for (const src of filePaths || []) {
+    try {
+      const base = path.basename(src);
+      let dest = path.join(dir, base);
+      const ext = path.extname(base);
+      const nameOnly = path.basename(base, ext);
+      let i = 1;
+      while (fs.existsSync(dest)) {
+        dest = path.join(dir, `${nameOnly} (${i++})${ext}`);
+      }
+      fs.copyFileSync(src, dest);
+      const st = fs.statSync(dest);
+      saved.push({ name: path.basename(dest), path: dest, size: st.size, addedAt: st.mtimeMs });
+    } catch (e) {
+      console.warn("docs:save failed for", src, e);
+    }
+  }
+  return saved;
+});
+
+ipcMain.handle("docs:delete", async (_evt, name: string): Promise<boolean> => {
+  const dir = ensureDocsDir();
+  const p = path.join(dir, name);
+  try {
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+    return true;
+  } catch (e) {
+    console.warn("docs:delete failed", name, e);
+    return false;
+  }
+});
+
+// ---- Calendar storage (userData/calendar.json) ----
+type CalendarColor = "blue" | "green" | "red" | "yellow" | "purple" | "gray";
+type CalendarEvent = {
+  id: string;
+  title: string;
+  date: string; // YYYY-MM-DD
+  start?: string; // HH:mm
+  end?: string;   // HH:mm
+  color: CalendarColor;
+  notes?: string;
+};
+
+function calendarFile(): string {
+  const dir = app.getPath("userData");
+  return path.join(dir, "calendar.json");
+}
+
+function loadCalendar(): CalendarEvent[] {
+  try {
+    const p = calendarFile();
+    if (!fs.existsSync(p)) return [];
+    const raw = fs.readFileSync(p, "utf8");
+    const data = JSON.parse(raw);
+    if (Array.isArray(data)) return data as CalendarEvent[];
+  } catch (e) {
+    console.warn("calendar: load failed", e);
+  }
+  return [];
+}
+
+function saveCalendar(evts: CalendarEvent[]) {
+  try {
+    const p = calendarFile();
+    fs.writeFileSync(p, JSON.stringify(evts, null, 2), "utf8");
+  } catch (e) {
+    console.warn("calendar: save failed", e);
+  }
+}
+
+function genId() {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+ipcMain.handle("calendar:list", async (): Promise<CalendarEvent[]> => {
+  return loadCalendar();
+});
+
+ipcMain.handle(
+  "calendar:add",
+  async (_evt, data: Omit<CalendarEvent, "id">): Promise<CalendarEvent> => {
+    const evts = loadCalendar();
+    const created: CalendarEvent = { id: genId(), ...data };
+    evts.push(created);
+    saveCalendar(evts);
+    return created;
+  }
+);
+
+ipcMain.handle(
+  "calendar:update",
+  async (_evt, id: string, patch: Partial<CalendarEvent>): Promise<CalendarEvent | null> => {
+    const evts = loadCalendar();
+    const idx = evts.findIndex((e) => e.id === id);
+    if (idx === -1) return null;
+    evts[idx] = { ...evts[idx], ...patch };
+    saveCalendar(evts);
+    return evts[idx];
+  }
+);
+
+ipcMain.handle("calendar:delete", async (_evt, id: string): Promise<boolean> => {
+  const evts = loadCalendar();
+  const next = evts.filter((e) => e.id !== id);
+  saveCalendar(next);
+  return next.length !== evts.length;
+});
+
+ipcMain.handle(
+  "calendar:upcoming",
+  async (_evt, maxCount: number = 3): Promise<CalendarEvent[]> => {
+    const evts = loadCalendar();
+    const now = new Date();
+    const parsed = evts
+      .map((e) => ({
+        e,
+        dt: new Date(`${e.date}T${e.start || "00:00"}:00`),
+      }))
+      .filter((x) => !isNaN(x.dt.getTime()) && x.dt >= now)
+      .sort((a, b) => a.dt.getTime() - b.dt.getTime())
+      .slice(0, Math.max(1, maxCount))
+      .map((x) => x.e);
+    return parsed;
+  }
+);
 
 app.whenReady().then(createWindow);
 

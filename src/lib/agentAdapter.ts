@@ -16,46 +16,29 @@ export interface AgentAdapter {
 }
 
 // ---- Real adapter (Electron preload očekávané API) ----
-declare global {
-  interface Window {
-    api?: {
-      agent?: {
-        run(input: {
-          text?: string;
-          // Pozn.: v reálném IPC často posíláme filePaths, zde zatím jen text
-          language?: string;
-        }): Promise<{ runId: string }>;
-        cancel(runId: string): Promise<void>;
-        onEvent(
-          cb: (e: AgentEvent) => void
-        ): { unsubscribe: () => void } | Unsubscribe;
-        listRuns(): Promise<AgentRunSummary[]>;
-      };
-    };
-  }
-}
-const hasReal = typeof window !== "undefined" && !!window.api?.agent;
+// Typování window.api je centralizováno v `src/types/global.d.ts`.
+const hasReal = typeof window !== "undefined" && !!window.api && !!window.api.agent;
 
 const RealAdapter: AgentAdapter = {
   async run(input) {
     // V první iteraci posíláme jen text; přílohy zpracuje dialog/IPC později.
-    const res = await window.api!.agent!.run({
+    const res = await window.api.agent.run({
       text: input.text,
       language: input.language,
     });
     return res;
   },
   async cancel(runId) {
-    return window.api!.agent!.cancel(runId);
+    return window.api.agent.cancel(runId);
   },
   onEvent(cb) {
-    const sub = window.api!.agent!.onEvent(cb);
-    if (typeof sub === "function") return sub;
-    if (sub && "unsubscribe" in sub) return sub.unsubscribe;
+    const sub: any = window.api.agent.onEvent(cb);
+    if (typeof sub === "function") return sub as Unsubscribe;
+    if (sub && typeof sub.unsubscribe === "function") return sub.unsubscribe as Unsubscribe;
     return () => {};
   },
   async listRuns() {
-    return window.api!.agent!.listRuns();
+    return window.api.agent.listRuns();
   },
 };
 
