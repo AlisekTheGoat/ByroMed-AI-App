@@ -1,10 +1,13 @@
 import { ThemeProvider } from "./hooks/useTheme";
 import Router from "./Router";
+import { AuthProvider } from "./auth/Auth";
 
 export default function App() {
   return (
     <ThemeProvider>
-      <Router />
+      <AuthProvider>
+        <Router />
+      </AuthProvider>
     </ThemeProvider>
   );
 }

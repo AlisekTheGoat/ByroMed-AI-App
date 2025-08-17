@@ -9,6 +9,12 @@ import type { OpenDialogReturnValue, OpenDialogOptions } from "electron";
 // --- pomocné flagy/cesty ---
 const IS_DEV = !!process.env.VITE_DEV_SERVER_URL || !app.isPackaged;
 
+// Vypnout bezpečnostní varování Electronu pouze v DEV režimu
+// (zmenší šum v konzoli; v produkci necháváme výchozí chování)
+if (IS_DEV) {
+  process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = "true";
+}
+
 // Kde je preload? (v dev: __dirname = dist/electron; v prod: resources/dist/electron)
 const PRELOAD_JS = app.isPackaged
   ? path.join(process.resourcesPath, "dist", "electron", "preload.js")

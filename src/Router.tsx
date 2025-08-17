@@ -5,8 +5,10 @@ import {
   Navigate,
   Outlet,
 } from "react-router-dom";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
+import { useLocation } from "react-router-dom";
 import Layout from "./components/Layout";
+import { useAuth } from "./auth/Auth";
 
 // Lazy load all pages
 const Dashboard = lazy(() => import("./pages/Dashboard"));
@@ -36,18 +38,38 @@ const LayoutWrapper = () => (
   </Layout>
 );
 
+// Route guard
+function RequireAuth() {
+  const auth = useAuth();
+  const startedRef = useRef(false);
+  const location = useLocation();
+  const search = typeof window !== 'undefined' ? window.location.search : '';
+  const params = new URLSearchParams(search);
+  const hasAuth0RedirectParams = params.has('code') && params.has('state');
+  useEffect(() => {
+    if (!auth.isAuthenticated && !auth.isLoading && !startedRef.current && !hasAuth0RedirectParams) {
+      startedRef.current = true;
+      auth.login();
+    }
+  }, [auth.isAuthenticated, auth.isLoading, hasAuth0RedirectParams]);
+  if (auth.isLoading || !auth.isAuthenticated || hasAuth0RedirectParams) return <div className="p-6">Probíhá přihlášení…</div>;
+  return <Outlet />;
+}
+
 const AppRouter = () => {
   return (
     <Router>
       <Routes>
-        <Route element={<LayoutWrapper />}>
-          <Route index element={<Dashboard />} />
-          <Route path="byroagent" element={<ByroAgent />} />
-          <Route path="kalendar" element={<Calendar />} />
-          <Route path="dokumenty" element={<Documents />} />
-          <Route path="pacienti" element={<Patients />} />
-          <Route path="nastaveni" element={<Settings />} />
-          <Route path="profil" element={<Profile />} />
+        <Route element={<RequireAuth />}>
+          <Route element={<LayoutWrapper />}>
+            <Route index element={<Dashboard />} />
+            <Route path="byroagent" element={<ByroAgent />} />
+            <Route path="kalendar" element={<Calendar />} />
+            <Route path="dokumenty" element={<Documents />} />
+            <Route path="pacienti" element={<Patients />} />
+            <Route path="nastaveni" element={<Settings />} />
+            <Route path="profil" element={<Profile />} />
+          </Route>
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

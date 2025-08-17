@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "../auth/Auth";
 
 export default function Header() {
   const navigate = useNavigate();
+  const auth = useAuth();
 
   return (
     <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/80 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/80">
@@ -31,25 +33,31 @@ export default function Header() {
           </h1>
         </div>
         {/* Right side controls */}
-        <div className="flex items-center space-x-4">
-          {/* User profile */}
-          <button
-            type="button"
-            onClick={() => navigate('/profil')}
-            aria-label="Můj profil"
-            className="flex items-center rounded-full focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
-            title="Můj profil"
-          >
-            <div className="h-8 w-8 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
-              <svg
-                className="h-full w-full text-gray-400"
-                fill="currentColor"
-                viewBox="0 0 24 24"
+        <div className="flex items-center space-x-3">
+          {auth.isAuthenticated ? (
+            <>
+              <div className="hidden sm:block text-sm text-gray-700 dark:text-gray-300 max-w-[180px] truncate" title={auth.user?.name || ''}>
+                {auth.user?.name}
+                {auth.isMock && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200">mock</span>}
+              </div>
+              <button
+                type="button"
+                onClick={() => navigate('/profil')}
+                aria-label="Můj profil"
+                className="flex items-center rounded-full focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+                title="Můj profil"
               >
-                <path d="M24 20.993V24H0v-2.996A14.977 14.977 0 0112.004 15c4.904 0 9.26 2.354 11.996 5.993zM16.002 8.999a4 4 0 11-8 0 4 4 0 018 0z" />
-              </svg>
-            </div>
-          </button>
+                <div className="h-8 w-8 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
+                  <svg className="h-full w-full text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M24 20.993V24H0v-2.996A14.977 14.977 0 0112.004 15c4.904 0 9.26 2.354 11.996 5.993zM16.002 8.999a4 4 0 11-8 0 4 4 0 018 0z" />
+                  </svg>
+                </div>
+              </button>
+              <button onClick={auth.logout} className="btn btn-secondary text-sm">Odhlásit</button>
+            </>
+          ) : (
+            <button onClick={auth.login} className="btn text-sm">Přihlásit</button>
+          )}
         </div>
       </div>
     </header>

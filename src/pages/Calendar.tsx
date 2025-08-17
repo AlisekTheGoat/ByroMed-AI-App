@@ -66,7 +66,13 @@ const Calendar = () => {
 
   const prevMonth = () => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1));
   const nextMonth = () => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1));
-  const thisMonth = () => setCursor(new Date(today.getFullYear(), today.getMonth(), 1));
+  const goToday = () => {
+    if (mode === 'month') {
+      setCursor(new Date(today.getFullYear(), today.getMonth(), 1));
+    } else {
+      setCursor(new Date(today));
+    }
+  };
 
   function toKey(d: Date): string {
     const y = d.getFullYear();
@@ -141,9 +147,9 @@ const Calendar = () => {
       <div className="card p-5">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <button onClick={prevMonth} className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800" aria-label="Předchozí měsíc">←</button>
-            <button onClick={thisMonth} className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800" aria-label="Aktuální měsíc">Dnes</button>
-            <button onClick={nextMonth} className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800" aria-label="Další měsíc">→</button>
+            <button onClick={prevMonth} className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800" aria-label="Předchozí období">←</button>
+            <button onClick={goToday} className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800" aria-label="Dnešní den">Dnes</button>
+            <button onClick={nextMonth} className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800" aria-label="Další období">→</button>
           </div>
           <div className="flex items-center gap-2">
             <div className="hidden sm:block text-sm font-medium text-gray-700 dark:text-gray-300 select-none">{monthLabel}</div>
@@ -170,30 +176,31 @@ const Calendar = () => {
               {weeks.flat().map((cell, idx) => {
                 const dayEvents = getEventsByDate(cell.date);
                 const isTodayCell = cell.isToday;
+                const todayCellClasses = isTodayCell ? 'bg-primary-600 text-white hover:bg-primary-700' : 'bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700';
                 return (
                   <div
                     key={idx}
-                    className={`min-h-[104px] p-2 bg-white dark:bg-gray-800 ${cell.inMonth ? '' : 'opacity-50'} relative hover:bg-gray-50 dark:hover:bg-gray-700`}
+                    className={`min-h-[104px] p-2 ${todayCellClasses} ${cell.inMonth ? '' : 'opacity-50'} relative`}
                     onDoubleClick={() => openCreate(cell.date)}
                   >
                     <div className="flex items-center justify-between">
-                      <div className={`text-xs ${isTodayCell ? 'text-blue-700 dark:text-blue-300 font-semibold' : 'text-gray-700 dark:text-gray-200'}`}>{cell.date.getDate()}</div>
+                      <div className={`text-xs ${isTodayCell ? 'text-white font-semibold' : 'text-gray-700 dark:text-gray-200'}`}>{cell.date.getDate()}</div>
                       {isTodayCell && (
-                        <span className="inline-flex items-center rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-medium text-white shadow-sm">Dnes</span>
+                        <span className="inline-flex items-center rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-medium text-primary-700 shadow-sm">Dnes</span>
                       )}
                     </div>
                     <div className="mt-1 space-y-1">
                       {dayEvents.map((ev) => {
                         const c = colorToClasses[ev.color];
                         return (
-                          <button key={ev.id} onClick={() => openEdit(ev)} className={`w-full text-left group ${c.bg} ${c.text} rounded-md px-2 py-1 text-xs leading-tight ring-1 ${c.ring} shadow-sm flex items-center gap-1`}>
+                          <button key={ev.id} onClick={() => openEdit(ev)} className={`w-full text-left group ${isTodayCell ? 'bg-white/10 text-white ring-white/30' : `${c.bg} ${c.text} ring-1 ${c.ring}`} rounded-md px-2 py-1 text-xs leading-tight shadow-sm flex items-center gap-1`}>
                             {ev.start && <span className="tabular-nums">{ev.start}</span>}
                             <span className="truncate">{ev.title}</span>
                           </button>
                         );
                       })}
                       {dayEvents.length === 0 && (
-                        <button onClick={() => openCreate(cell.date)} className="w-full text-[10px] text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 text-left">+ Přidat událost</button>
+                        <button onClick={() => openCreate(cell.date)} className={`w-full text-[10px] ${isTodayCell ? 'text-white/80 hover:text-white' : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300'} text-left`}>+ Přidat událost</button>
                       )}
                     </div>
                   </div>
@@ -218,24 +225,25 @@ const Calendar = () => {
               {days.map((d, idx) => {
                 const dayEvents = getEventsByDate(d);
                 const isTodayCell = isSameDay(d, today);
+                const todayCellClasses = isTodayCell ? 'bg-primary-600 text-white hover:bg-primary-700' : 'bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700';
                 return (
-                  <div key={idx} className={`min-h-[140px] p-2 bg-white dark:bg-gray-800 relative hover:bg-gray-50 dark:hover:bg-gray-700`}>
+                  <div key={idx} className={`min-h-[140px] p-2 relative ${todayCellClasses}`}>
                     <div className="flex items-center justify-between">
-                      <div className={`text-xs ${isTodayCell ? 'text-blue-700 dark:text-blue-300 font-semibold' : 'text-gray-700 dark:text-gray-200'}`}>{d.getDate()}.</div>
-                      {isTodayCell && <span className="inline-flex items-center rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-medium text-white shadow-sm">Dnes</span>}
+                      <div className={`text-xs ${isTodayCell ? 'text-white font-semibold' : 'text-gray-700 dark:text-gray-200'}`}>{d.getDate()}.</div>
+                      {isTodayCell && <span className="inline-flex items-center rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-medium text-primary-700 shadow-sm">Dnes</span>}
                     </div>
                     <div className="mt-1 space-y-1">
                       {dayEvents.map((ev) => {
                         const c = colorToClasses[ev.color];
                         return (
-                          <button key={ev.id} onClick={() => openEdit(ev)} className={`w-full text-left group ${c.bg} ${c.text} rounded-md px-2 py-1 text-xs leading-tight ring-1 ${c.ring} shadow-sm flex items-center gap-1`}>
+                          <button key={ev.id} onClick={() => openEdit(ev)} className={`w-full text-left group ${isTodayCell ? 'bg-white/10 text-white ring-white/30' : `${c.bg} ${c.text} ring-1 ${c.ring}`} rounded-md px-2 py-1 text-xs leading-tight shadow-sm flex items-center gap-1`}>
                             {ev.start && <span className="tabular-nums">{ev.start}</span>}
                             <span className="truncate">{ev.title}</span>
                           </button>
                         );
                       })}
                       {dayEvents.length === 0 && (
-                        <button onClick={() => openCreate(d)} className="w-full text-[10px] text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 text-left">+ Přidat událost</button>
+                        <button onClick={() => openCreate(d)} className={`w-full text-[10px] ${isTodayCell ? 'text-white/80 hover:text-white' : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300'} text-left`}>+ Přidat událost</button>
                       )}
                     </div>
                   </div>
@@ -249,28 +257,55 @@ const Calendar = () => {
           const d = new Date(cursor);
           const dayEvents = getEventsByDate(d);
           const isTodayCell = isSameDay(d, today);
+          const hours = Array.from({ length: 24 }, (_, i) => i);
+          const getHour = (t?: string) => (t ? parseInt(t.split(':')[0] || '0', 10) : null);
           return (
             <div className="rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 p-3">
               <div className="flex items-center justify-between">
-                <div className={`text-sm ${isTodayCell ? 'text-blue-700 dark:text-blue-300 font-semibold' : 'text-gray-700 dark:text-gray-200'}`}>
+                <div className={`text-sm ${isTodayCell ? 'text-primary-700 dark:text-primary-300 font-semibold' : 'text-gray-700 dark:text-gray-200'}`}>
                   {new Intl.DateTimeFormat('cs-CZ', { weekday: 'long', day: 'numeric', month: 'long' }).format(d)}
                 </div>
                 <div>
                   <button onClick={() => openCreate(d)} className="text-sm px-2 py-1 rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800">+ Přidat</button>
                 </div>
               </div>
-              <div className="mt-3 space-y-2">
-                {dayEvents.map((ev) => {
-                  const c = colorToClasses[ev.color];
-                  return (
-                    <button key={ev.id} onClick={() => openEdit(ev)} className={`w-full text-left ${c.bg} ${c.text} rounded-md px-3 py-2 text-sm ring-1 ${c.ring} shadow-sm flex items-center gap-2`}>
-                      {ev.start && <span className="tabular-nums">{ev.start}</span>}
-                      <span className="truncate">{ev.title}</span>
-                    </button>
-                  );
-                })}
-                {dayEvents.length === 0 && (
-                  <div className="text-sm text-gray-500 dark:text-gray-400">Žádné události</div>
+              <div className="mt-4">
+                <div className="grid grid-cols-[64px_1fr]">
+                  {hours.map((h) => {
+                    const atHour = dayEvents.filter((ev) => getHour(ev.start) === h);
+                    return (
+                      <React.Fragment key={h}>
+                        <div className="pr-3 py-2 text-xs text-gray-500 dark:text-gray-400 tabular-nums">{String(h).padStart(2, '0')}:00</div>
+                        <div className="py-1 border-b border-gray-100 dark:border-gray-800 min-h-[40px]">
+                          <div className="space-y-1">
+                            {atHour.map((ev) => {
+                              const c = colorToClasses[ev.color];
+                              return (
+                                <button key={ev.id} onClick={() => openEdit(ev)} className={`w-full text-left ${c.bg} ${c.text} rounded-md px-3 py-2 text-xs ring-1 ${c.ring} shadow-sm flex items-center gap-2`}>
+                                  <span className="tabular-nums">{ev.start}</span>
+                                  <span className="font-medium truncate">{ev.title}</span>
+                                  {ev.end && <span className="ml-auto opacity-70 tabular-nums">{ev.end}</span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+                {dayEvents.filter((ev) => getHour(ev.start) == null).length > 0 && (
+                  <div className="mt-4">
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Bez času</div>
+                    <div className="space-y-1">
+                      {dayEvents.filter((ev) => getHour(ev.start) == null).map((ev) => {
+                        const c = colorToClasses[ev.color];
+                        return (
+                          <button key={ev.id} onClick={() => openEdit(ev)} className={`w-full text-left ${c.bg} ${c.text} rounded-md px-3 py-2 text-xs ring-1 ${c.ring} shadow-sm`}>{ev.title}</button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
