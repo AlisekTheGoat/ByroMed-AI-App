@@ -8,7 +8,8 @@
     "strict": true,
     "esModuleInterop": true,
     "moduleResolution": "Node",
-    "types": ["node"]
+    "types": ["node"],
+    "noEmit": false
   },
   "include": ["./preload.ts"],
   "exclude": []

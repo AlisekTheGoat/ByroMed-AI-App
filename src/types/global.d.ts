@@ -9,6 +9,26 @@ declare global {
         listRuns(): Promise<Array<{ id: string; status: 'running' | 'success' | 'error' | 'canceled'; startedAt: number; finishedAt?: number }>>;
         onEvent(cb: (e: any) => void): () => void;
       };
+      auth: {
+        login(): Promise<void>;
+        logout(): Promise<void>;
+        getAccessToken(scopes?: string[]): Promise<string | null>;
+        getUser(): Promise<{ sub: string; email?: string; name?: string } | null>;
+      };
+      patients: {
+        list(page?: number, pageSize?: number): Promise<{
+          data: Array<any>;
+          pagination: { page: number; pageSize: number; total: number; totalPages: number };
+        }>;
+        get(id: string): Promise<any>;
+        create(input: any): Promise<any>;
+        update(id: string, patch: any): Promise<any>;
+        delete(id: string): Promise<boolean>;
+      };
+      settings: {
+        get(): Promise<Record<string, any>>;
+        set(input: Record<string, any>): Promise<Record<string, any>>;
+      };
       docs: {
         list(): Promise<Array<{ name: string; path: string; size: number; addedAt: number }>>;
         save(filePaths: string[]): Promise<Array<{ name: string; path: string; size: number; addedAt: number }>>;
@@ -71,6 +91,48 @@ declare global {
       };
       dialog: {
         openFiles(): Promise<string[]>;
+      };
+      profile: {
+        getSelf(): Promise<{
+          id: string;
+          authSub: string;
+          email?: string | null;
+          name?: string | null;
+          clinicName?: string | null;
+          specialty?: string | null;
+          phone?: string | null;
+          address?: string | null;
+          city?: string | null;
+          country?: string | null;
+          preferences?: Record<string, unknown> | null;
+          createdAt: string | Date;
+          updatedAt: string | Date;
+        } | null>;
+        upsertSelf(input: {
+          email?: string | null;
+          name?: string | null;
+          clinicName?: string | null;
+          specialty?: string | null;
+          phone?: string | null;
+          address?: string | null;
+          city?: string | null;
+          country?: string | null;
+          preferences?: Record<string, unknown> | null;
+        }): Promise<{
+          id: string;
+          authSub: string;
+          email?: string | null;
+          name?: string | null;
+          clinicName?: string | null;
+          specialty?: string | null;
+          phone?: string | null;
+          address?: string | null;
+          city?: string | null;
+          country?: string | null;
+          preferences?: Record<string, unknown> | null;
+          createdAt: string | Date;
+          updatedAt: string | Date;
+        }>;
       };
     };
   }

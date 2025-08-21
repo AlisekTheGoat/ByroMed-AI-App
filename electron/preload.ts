@@ -57,6 +57,50 @@ contextBridge.exposeInMainWorld("api", {
     },
     onEvent,
   },
+  auth: {
+    login() {
+      return ipcRenderer.invoke("auth:login") as Promise<void>;
+    },
+    logout() {
+      return ipcRenderer.invoke("auth:logout") as Promise<void>;
+    },
+    getAccessToken(scopes?: string[]) {
+      return ipcRenderer.invoke("auth:getAccessToken", scopes) as Promise<string | null>;
+    },
+    getUser() {
+      return ipcRenderer.invoke(
+        "auth:getUser"
+      ) as Promise<{ sub: string; email?: string; name?: string } | null>;
+    },
+  },
+  patients: {
+    list(page: number = 1, pageSize: number = 10) {
+      return ipcRenderer.invoke("patients:list", page, pageSize) as Promise<{
+        data: Array<any>;
+        pagination: { page: number; pageSize: number; total: number; totalPages: number };
+      }>;
+    },
+    get(id: string) {
+      return ipcRenderer.invoke("patients:get", id) as Promise<any>;
+    },
+    create(input: any) {
+      return ipcRenderer.invoke("patients:create", input) as Promise<any>;
+    },
+    update(id: string, patch: any) {
+      return ipcRenderer.invoke("patients:update", id, patch) as Promise<any>;
+    },
+    delete(id: string) {
+      return ipcRenderer.invoke("patients:delete", id) as Promise<boolean>;
+    },
+  },
+  settings: {
+    get() {
+      return ipcRenderer.invoke("settings:get") as Promise<Record<string, any>>;
+    },
+    set(input: Record<string, any>) {
+      return ipcRenderer.invoke("settings:set", input) as Promise<Record<string, any>>;
+    },
+  },
   docs: {
     list() {
       return ipcRenderer.invoke("docs:list") as Promise<{
@@ -151,9 +195,69 @@ contextBridge.exposeInMainWorld("api", {
       }>;
     },
   },
+  profile: {
+    getSelf() {
+      return ipcRenderer.invoke("profile:getSelf") as Promise<{
+        id: string;
+        authSub: string;
+        email?: string | null;
+        name?: string | null;
+        clinicName?: string | null;
+        specialty?: string | null;
+        phone?: string | null;
+        address?: string | null;
+        city?: string | null;
+        country?: string | null;
+        preferences?: Record<string, unknown> | null;
+        createdAt: string | Date;
+        updatedAt: string | Date;
+      } | null>;
+    },
+    upsertSelf(input: {
+      email?: string | null;
+      name?: string | null;
+      clinicName?: string | null;
+      specialty?: string | null;
+      phone?: string | null;
+      address?: string | null;
+      city?: string | null;
+      country?: string | null;
+      preferences?: Record<string, unknown> | null;
+    }) {
+      return ipcRenderer.invoke("profile:upsertSelf", input) as Promise<{
+        id: string;
+        authSub: string;
+        email?: string | null;
+        name?: string | null;
+        clinicName?: string | null;
+        specialty?: string | null;
+        phone?: string | null;
+        address?: string | null;
+        city?: string | null;
+        country?: string | null;
+        preferences?: Record<string, unknown> | null;
+        createdAt: string | Date;
+        updatedAt: string | Date;
+      }>;
+    },
+  },
   dialog: {
     openFiles() {
       return ipcRenderer.invoke("dialog:openFiles") as Promise<string[]>;
     },
   },
 });
+
+// Diagnostic: confirm which namespaces are exposed at preload execution time
+try {
+  // Delay to ensure exposeInMainWorld has executed
+  setTimeout(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const keys = Object.keys((window as any).api || {});
+    console.log(
+      `[preload] api keys: ${JSON.stringify(keys)} | electron=${process.versions.electron} | chrome=${process.versions.chrome}`
+    );
+  }, 0);
+} catch {
+  // ignore
+}

@@ -10,10 +10,15 @@
     "watch:main": "tsc -w -p electron/tsconfig.json",
     "watch:preload": "tsc -w -p electron/tsconfig.preload.json",
     "watch:electron": "concurrently -k \"npm:watch:main\" \"npm:watch:preload\"",
-    "dev": "concurrently -k \"npm:vite\" \"npm:watch:electron\" \"sh -c 'wait-on http://localhost:5173 dist/electron/main.js && npm run electron'\"",
+    "dev": "concurrently -k \"npm:vite\" \"npm:watch:electron\" \"sh -c 'wait-on http://localhost:5173 dist/electron/main.js dist/electron/preload.js && npm run electron'\"",
     "build:renderer": "vite build",
     "build:electron": "tsc -p electron/tsconfig.json && tsc -p electron/tsconfig.preload.json",
-    "build": "npm run clean && npm run build:renderer && npm run build:electron && electron-builder"
+    "build": "npm run clean && npm run build:renderer && npm run build:electron && electron-builder",
+    "prisma:generate:local": "prisma generate --schema prisma/schema.prisma",
+    "prisma:generate:neon": "prisma generate --schema prisma-neon/schema.prisma",
+    "prisma:generate": "npm run prisma:generate:local && npm run prisma:generate:neon",
+    "prisma:migrate:local": "prisma migrate dev --schema prisma/schema.prisma",
+    "postinstall": "npm run prisma:generate"
   },
   "repository": {
     "type": "git",
@@ -48,6 +53,7 @@
   "dependencies": {
     "@auth0/auth0-react": "^2.4.0",
     "@prisma/client": "^6.14.0",
+    "dotenv": "^16.4.5",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^6.30.1",

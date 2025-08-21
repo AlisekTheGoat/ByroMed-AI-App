@@ -1,7 +1,24 @@
-import { PrismaClient, Patient } from '@prisma/client';
-import { ipcRenderer } from 'electron';
+// Renderer-side service now uses Electron IPC exposed via window.api.patients
+// to avoid bundling Prisma in the renderer and to stabilize data access.
 
-const prisma = new PrismaClient();
+type Patient = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  birthNumber: string;
+  dateOfBirth?: string | Date | null;
+  gender: string;
+  phone?: string | null;
+  email?: string | null;
+  insurance?: string | null;
+  insuranceCode?: string | null;
+  address?: string | null;
+  city?: string | null;
+  employerOrSchool?: string | null;
+  notes?: string | null;
+  createdAt?: string | Date;
+  updatedAt?: string | Date;
+};
 
 interface PatientInput {
   firstName: string;
@@ -23,25 +40,8 @@ export const PatientService = {
   // Get all patients with pagination
   async getPatients(page: number = 1, pageSize: number = 10) {
     try {
-      const skip = (page - 1) * pageSize;
-      const [patients, total] = await Promise.all([
-        prisma.patient.findMany({
-          skip,
-          take: pageSize,
-          orderBy: { lastName: 'asc' },
-        }),
-        prisma.patient.count(),
-      ]);
-
-      return {
-        data: patients,
-        pagination: {
-          page,
-          pageSize,
-          total,
-          totalPages: Math.ceil(total / pageSize),
-        },
-      };
+      const res = await window.api.patients.list(page, pageSize);
+      return res;
     } catch (error) {
       console.error('Error fetching patients:', error);
       throw error;
@@ -51,9 +51,7 @@ export const PatientService = {
   // Get a single patient by ID
   async getPatientById(id: string) {
     try {
-      return await prisma.patient.findUnique({
-        where: { id },
-      });
+      return await window.api.patients.get(id);
     } catch (error) {
       console.error(`Error fetching patient with ID ${id}:`, error);
       throw error;
@@ -63,9 +61,7 @@ export const PatientService = {
   // Create a new patient
   async createPatient(patientData: PatientInput) {
     try {
-      return await prisma.patient.create({
-        data: patientData,
-      });
+      return await window.api.patients.create(patientData);
     } catch (error) {
       console.error('Error creating patient:', error);
       throw error;
@@ -75,10 +71,7 @@ export const PatientService = {
   // Update an existing patient
   async updatePatient(id: string, patientData: Partial<PatientInput>) {
     try {
-      return await prisma.patient.update({
-        where: { id },
-        data: patientData,
-      });
+      return await window.api.patients.update(id, patientData);
     } catch (error) {
       console.error(`Error updating patient with ID ${id}:`, error);
       throw error;
@@ -88,9 +81,8 @@ export const PatientService = {
   // Delete a patient
   async deletePatient(id: string) {
     try {
-      return await prisma.patient.delete({
-        where: { id },
-      });
+      await window.api.patients.delete(id);
+      return true;
     } catch (error) {
       console.error(`Error deleting patient with ID ${id}:`, error);
       throw error;
@@ -159,9 +151,8 @@ export const PatientService = {
   // Export patients to CSV
   async exportPatientsToCSV() {
     try {
-      const patients = await prisma.patient.findMany({
-        orderBy: { lastName: 'asc' },
-      });
+      // Fetch a large page to export all (simple approach). Adjust if dataset grows large.
+      const { data: patients } = await window.api.patients.list(1, 10000);
       
       if (patients.length === 0) {
         throw new Error('No patients found to export');
@@ -189,12 +180,12 @@ export const PatientService = {
       let csvContent = headers.join(',') + '\n';
       
       // Add patient data
-      patients.forEach(patient => {
+      patients.forEach((patient: any) => {
         const row = [
           `"${patient.firstName || ''}"`,
           `"${patient.lastName || ''}"`,
           `"${patient.birthNumber || ''}"`,
-          `"${patient.dateOfBirth?.toISOString().split('T')[0] || ''}"`,
+          `"${(patient.dateOfBirth ? new Date(patient.dateOfBirth) : null)?.toISOString().split('T')[0] || ''}"`,
           `"${patient.gender || ''}"`,
           `"${patient.phone || ''}"`,
           `"${patient.email || ''}"`,
@@ -204,7 +195,7 @@ export const PatientService = {
           `"${patient.city || ''}"`,
           `"${patient.employerOrSchool || ''}"`,
           `"${patient.notes || ''}"`,
-          `"${patient.createdAt.toISOString()}"`,
+          `"${(patient.createdAt ? new Date(patient.createdAt) : new Date()).toISOString()}"`,
         ];
         
         csvContent += row.join(',') + '\n';

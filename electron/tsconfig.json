@@ -8,7 +8,8 @@
     "strict": true,
     "esModuleInterop": true,
     "moduleResolution": "Node",
-    "types": ["node"]            // <— NE "electron"
+    "types": ["node"],            // <— NE "electron"
+    "noEmit": false
   },
   "include": ["./main.ts"],
   "exclude": []

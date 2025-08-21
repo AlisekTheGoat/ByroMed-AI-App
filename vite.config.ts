@@ -106,7 +106,7 @@ export default defineConfig(({ mode }) => {
     optimizeDeps: {
       include: ['react', 'react-dom', 'react-router-dom'],
       // Exclude dependencies that don't need to be pre-bundled
-      exclude: ['@node-rs/argon2', 'better-sqlite3'],
+      exclude: ['@node-rs/argon2'],
       // Force dependency pre-bundling, ignoring browser field
       esbuildOptions: {
         // Node.js global to browser globalThis

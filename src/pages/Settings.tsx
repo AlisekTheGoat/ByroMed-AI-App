@@ -1,4 +1,4 @@
-import React, { ChangeEvent, useState } from "react";
+import React, { ChangeEvent, useEffect, useState } from "react";
 import { useTheme, Theme } from "../hooks/useTheme";
 
 const Settings = () => {
@@ -38,10 +38,47 @@ const Settings = () => {
     }
   };
 
-  const handleSubmit = (e) => {
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // Load settings from persistent storage on mount
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const s = await window.api.settings.get();
+        if (!mounted || !s) return;
+        // Apply theme if present
+        if (s.theme) setTheme(s.theme as Theme);
+        // Merge into formData when keys exist
+        setFormData((prev) => ({
+          ...prev,
+          ...s,
+          notifications: {
+            ...prev.notifications,
+            ...(s.notifications || {}),
+          },
+          theme: (s.theme as string) ?? prev.theme,
+        }));
+      } catch (e) {
+        console.warn("settings: load failed", e);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [setTheme]);
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    // Handle form submission
-    alert("Nastavení bylo úspěšně uloženo");
+    try {
+      const payload = { ...formData, theme };
+      const saved = await window.api.settings.set(payload);
+      // If theme changed in form, ensure hook updated
+      if (saved.theme && saved.theme !== theme) setTheme(saved.theme as Theme);
+      setSavedAt(Date.now());
+    } catch (err) {
+      console.error("settings: save failed", err);
+    }
   };
 
   return (
@@ -169,11 +206,13 @@ const Settings = () => {
               </div>
 
               <div className="pt-5">
-                <div className="flex justify-end">
-                  <button
-                    type="submit"
-                    className="ml-3 inline-flex justify-center rounded-md border border-transparent bg-blue-600 py-2 px-4 text-sm font-medium text-white shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-                  >
+                <div className="flex items-center justify-end gap-3">
+                  {savedAt && (
+                    <span className="text-sm text-gray-500 dark:text-gray-400">
+                      Uloženo {new Date(savedAt).toLocaleTimeString()}
+                    </span>
+                  )}
+                  <button type="submit" className="btn btn-primary">
                     Uložit změny
                   </button>
                 </div>
@@ -363,10 +402,10 @@ const Settings = () => {
                   Nebezpečná zóna
                 </h3>
                 <div className="space-y-2">
-                  <button className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/30 rounded-md">
+                  <button className="btn btn-danger w-full text-left">
                     Smazat účet
                   </button>
-                  <button className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/30 rounded-md">
+                  <button className="btn btn-danger w-full text-left">
                     Odhlásit se ze všech zařízení
                   </button>
                 </div>
