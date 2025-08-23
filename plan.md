@@ -4,7 +4,7 @@ Tento dokument je zdroj pravdy pro autentizaci, datovou architekturu a implement
 
 ## Cíle
 
-- Autorizace přes Auth0 (Free tier), flow PKCE + custom protocol.
+- Autorizace přes Auth0 (Free tier), flow PKCE.
 - Cloudová DB Neon Postgres s ORM Prisma pro ne‑PHI data a lékařská (necitlivá) data.
 - Lokální úložiště (SQLite/FS) pro veškerá pacientská PHI a generované dokumenty.
 - Oddělená Auth adapter vrstva: snadná výměna Auth0 → Neon Auth v budoucnu.
@@ -210,6 +210,10 @@ Viz předchozí sekce – tabulky `app_user`, `user_preferences`, `template`, `t
 
 [2025-08-20 21:42] – Env: Reset `.env` to template placeholders for `DATABASE_URL` (local Postgres) and `NEON_DATABASE_URL` (Neon). Fill both before pushing/migrating.
 
+[2025-08-21 06:49] – Local Postgres: Installed `postgresql@16` via Homebrew and started service (`brew services start postgresql@16`). Next: create role `byromed` and DB `byromed_local` and set `DATABASE_URL`.
+
+[2025-08-21 07:05] – Local Postgres: Created role `byromed` and DB `byromed_local`. Updated `.env` `DATABASE_URL=postgresql://byromed:postgres@localhost:5432/byromed_local?schema=public`. Ran `prisma generate --schema prisma/schema.prisma` and `prisma migrate dev --name init_local`.
+
 ## Migration – Local PostgreSQL (PHI) + Neon (Profile)
 
 ### Env proměnné
@@ -219,7 +223,7 @@ Viz předchozí sekce – tabulky `app_user`, `user_preferences`, `template`, `t
 
 ### Příkazy
 
-```bash
+````bash
 # 1) Spusť lokální Postgres a vytvoř DB (příklad pro psql)
 createdb byromed_local || true
 
@@ -245,7 +249,8 @@ npm run prisma:migrate:local
   ```env
   VITE_AUTH0_DOMAIN=dev-4k8r5dm2wsc1gptt.eu.auth0.com
   VITE_AUTH0_CLIENT_ID=DiJissNbO2EOgxe2cNlAGEehj45uqLDh
-  ```
+````
+
 - Start processes:
   - `npm run vite`
   - `npm run watch:electron`
@@ -496,3 +501,110 @@ Suggested production CSP (adjust domains as needed):
 - **Testing smoke**: Verify: window loads, agent starts and finishes, docs CRUD works, calendar CRUD works.
 
 If a change requires loosening any rule, document the rationale and add a task to restore the stricter setting post-merge.
+
+## Change Log (continued)
+
+[2025-08-21 07:31] – Neon: Recreated `prisma-neon/schema.prisma`, generated Neon client to `prisma-neon/generated/neon`, and pushed schema to Neon (DB "ByroMed_DB", schema "public"). `NEON_DATABASE_URL` confirmed via successful `prisma db push`.
+
+[2025-08-22 05:55] – Electron/Prisma: Fixed Neon client resolution and packaging
+
+- Updated `electron/prisma.ts` to resolve the Neon Prisma client at runtime using `process.cwd()` + `prisma-neon/generated/neon`, while keeping a type-only import for TypeScript.
+- Included `electron/prisma.ts` in `electron/tsconfig.json` so the watch build emits `dist/electron/prisma.js` (previously only `main.ts` was compiled).
+- Updated `package.json` electron-builder `build.files` to include `prisma-neon/generated/neon/**` so the packaged app can load the Neon Prisma client.
+- Note: In dev, please restart the Electron process once (stop `npm run dev` and start it again) so it picks up the updated `dist/electron/prisma.js`.
+
+[2025-08-22 05:58] – Diagnostics + Resolver hardening
+
+- Hardened Neon client path resolution in `electron/prisma.ts` with multiple candidates (cwd, \_\_dirname, resourcesPath) using `require.resolve`.
+- Exposed `getResolvedNeonClientPath()` and added one-time diagnostic log `[prisma] Neon client resolved at: ...` in main process.
+- Added IPC `diagnostics:neonPath` in `electron/main.ts` and exposed `window.api.diagnostics.neonPath()` in `electron/preload.ts` for quick runtime verification.
+- Updated `package.json` `asarUnpack` to include `prisma-neon/generated/neon/**` so packaged runtime can require the client outside ASAR.
+
+## Corrections – Storage and Auth Flow (authoritative overrides)
+
+- Replace any remaining mentions of SQLite/FS for local PHI with local PostgreSQL.
+
+  - Authoritative storage: Local PostgreSQL for PHI (patients, documents, agent runs/events, templates). Neon PostgreSQL for non-PHI (user profile, preferences, metadata).
+  - Dual Prisma clients remain: `getLocalPrisma()` uses `DATABASE_URL` (local Postgres). `getNeonPrisma()` uses `NEON_DATABASE_URL` (Neon Postgres).
+  - Older references to SQLite in this document are deprecated by this correction.
+
+- Auth0 login must occur at app start with explicit credentials prompt.
+  - Flow: Open app → Auth0 Universal Login (email/password) → Login → Access app and databases.
+  - Implementation: `buildAuthorizeUrl()` enforces `prompt=login` and `max_age=0`, and `startAuthLogin()` is invoked after protocol registration on app startup.
+
+## Auth Rewrite – Embedded Login Gate (2025-08-22 06:25)
+
+- Replaced external-browser + custom protocol deep-link method with an embedded `BrowserWindow` login.
+
+  - `startAuthLogin()` now opens Auth0 Universal Login inside a dedicated window and intercepts the `byromed://auth/callback` URL via `will-redirect`/`will-navigate`.
+  - On intercept, the code is exchanged for tokens directly in the main process and the login window is closed.
+  - If the login window is closed or an error occurs, app startup is aborted (no main window).
+
+- Main window creation is gated by successful authentication.
+
+  - On `app.whenReady()`, we await `startAuthLogin()` first; only then `createWindow()` is called.
+  - Removed custom protocol registration and OS deep-link handling from startup to avoid opening any external app.
+
+- Rationale: Guarantees the exact flow — open app -> Auth0 login -> login -> access app. Any failure is handled by Auth0 UI, and the app won’t open without authentication.
+
+## Auth Update – HTTPS Redirect Intercept (2025-08-22 06:28)
+
+- Switched `AUTH0_REDIRECT_URI` to `https://byromed.local/auth/callback` and intercept it inside the embedded login window using `session.webRequest.onBeforeRequest`.
+- Blocks any popups via `setWindowOpenHandler` and prevents external browser launches.
+- Action required in Auth0: add `https://byromed.local/auth/callback` to Allowed Callback URLs.
+
+## Auth Fix – Callback URL Mismatch (2025-08-22 06:33)
+
+- Error observed: "Callback URL mismatch. The provided redirect_uri is not in the list of allowed callback URLs."
+- Resolution options:
+  - Preferred: In Auth0 Application Settings, add `https://byromed.local/auth/callback` to Allowed Callback URLs. Save, then restart the app.
+  - Alternative: Keep embedded login but revert `AUTH0_REDIRECT_URI` back to `byromed://auth/callback` (already intercepted inside the login window) to avoid Auth0 settings changes. Ensure `byromed://auth/callback` remains in Allowed Callback URLs.
+- Notes:
+  - Only exact matches are accepted by Auth0. Include the full URL string.
+  - If implementing logout later, add the same base to Allowed Logout URLs.
+
+## Auth Update – Reverted to Custom Scheme (2025-08-22 06:34)
+
+- Code now uses `AUTH0_REDIRECT_URI = byromed://auth/callback` again.
+- Embedded login remains; the redirect is intercepted via `will-redirect`/`will-navigate` inside the login window, so no OS protocol registration is required.
+- This avoids the need to modify Auth0 settings if `byromed://auth/callback` is already allowed.
+
+## Auth0 Removal – Renderer & Preload (2025-08-22 07:25)
+
+- Removed `window.api.auth` exposure in `electron/preload.ts`.
+- Replaced `src/auth/Auth.tsx` with a no-auth stub (always authenticated, login/logout are no-ops).
+- Unguarded routes in `src/Router.tsx` (removed `RequireAuth`).
+- Cleaned `src/components/Header.tsx` (removed login/logout and user display; kept profile button).
+- Removed Auth0 env typings and module declaration from `src/env.d.ts`.
+- Added typings for `window.api.profile` and `window.api.diagnostics` to match preload API.
+- Removed `@auth0/auth0-react` from `package.json` (run install to update lockfile).
+
+### Notes
+
+- Electron security settings unchanged (`contextIsolation`, `sandbox`, `webSecurity`).
+- Profile IPC in `electron/main.ts` now uses a fixed local `authSub` string; no tokens are used.
+
+### Next Steps
+
+- Run: `npm install` to refresh the lockfile and prune dependencies.
+- Verify compile/run: `npm run dev`.
+- Optional: Update or deprecate earlier Auth0 plan sections above to reflect the new no-auth baseline.
+
+## Dependency Refresh — npm install (2025-08-22 07:44)
+
+- Executed `npm install`.
+- Removed 2 packages; 0 vulnerabilities reported.
+- Prisma clients regenerated for local and neon schemas during postinstall.
+- Ready to start dev and verify runtime.
+
+## Renderer Auth Stub & Type-Checks (2025-08-22 07:46)
+
+- Created `src/auth/Auth.tsx` with a minimal no-auth stub exporting `AuthProvider` and `useAuth` to satisfy `src/App.tsx` import.
+- Type-checked Electron (`electron/tsconfig.json`) — OK.
+- Type-checked renderer (`tsconfig.json`) — OK.
+
+## Dev Run — Initial Verification (2025-08-23 07:43)
+
+- Started `npm run dev` (concurrently runs Vite + Electron watchers).
+- Electron main/preload watchers report 0 errors; Electron launched against Vite URL.
+- Proceeding with manual UI sanity checks.

@@ -57,22 +57,6 @@ contextBridge.exposeInMainWorld("api", {
     },
     onEvent,
   },
-  auth: {
-    login() {
-      return ipcRenderer.invoke("auth:login") as Promise<void>;
-    },
-    logout() {
-      return ipcRenderer.invoke("auth:logout") as Promise<void>;
-    },
-    getAccessToken(scopes?: string[]) {
-      return ipcRenderer.invoke("auth:getAccessToken", scopes) as Promise<string | null>;
-    },
-    getUser() {
-      return ipcRenderer.invoke(
-        "auth:getUser"
-      ) as Promise<{ sub: string; email?: string; name?: string } | null>;
-    },
-  },
   patients: {
     list(page: number = 1, pageSize: number = 10) {
       return ipcRenderer.invoke("patients:list", page, pageSize) as Promise<{
@@ -239,6 +223,14 @@ contextBridge.exposeInMainWorld("api", {
         createdAt: string | Date;
         updatedAt: string | Date;
       }>;
+    },
+  },
+  diagnostics: {
+    neonPath() {
+      return ipcRenderer.invoke("diagnostics:neonPath") as Promise<
+        | { ok: true; path: string; exists: boolean }
+        | { ok: false; error: string }
+      >;
     },
   },
   dialog: {

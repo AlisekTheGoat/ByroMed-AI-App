@@ -148,7 +148,7 @@ const config = {
     "isCustomOutput": true
   },
   "relativeEnvPaths": {
-    "rootEnvPath": "../../../.env",
+    "rootEnvPath": null,
     "schemaEnvPath": "../../../.env"
   },
   "relativePath": "../..",
@@ -167,8 +167,8 @@ const config = {
       }
     }
   },
-  "inlineSchema": "generator client {\n  provider = \"prisma-client-js\"\n  output   = \"./generated/neon\"\n}\n\ndatasource db {\n  provider = \"postgresql\"\n  url      = env(\"NEON_DATABASE_URL\")\n}\n\n// Non-PHI profile stored in Neon\nmodel Profile {\n  authSub    String   @id @map(\"auth_sub\")\n  email      String?\n  name       String?\n  clinicName String?\n  updatedAt  DateTime @default(now()) @map(\"updated_at\")\n\n  @@map(\"Profile\")\n}\n",
-  "inlineSchemaHash": "a3c46e91da18f36a7243fe6948678b4dadbbb572be5e81e462215ed46e22e28f",
+  "inlineSchema": "generator client {\n  provider = \"prisma-client-js\"\n  output   = \"./generated/neon\"\n}\n\ndatasource db {\n  provider = \"postgresql\"\n  url      = env(\"NEON_DATABASE_URL\")\n}\n\nmodel Profile {\n  authSub    String   @id @map(\"auth_sub\")\n  email      String?\n  name       String?\n  clinicName String?\n  updatedAt  DateTime @default(now()) @map(\"updated_at\")\n\n  @@map(\"Profile\")\n}\n",
+  "inlineSchemaHash": "e52f5f56e388ee87ceaea76e0293a1a2533fe4e35222451682d1cb8e47d13a3f",
   "copyEngine": true
 }
 config.dirname = '/'

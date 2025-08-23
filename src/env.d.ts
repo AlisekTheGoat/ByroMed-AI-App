@@ -1,16 +1,13 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  readonly VITE_AUTH0_DOMAIN?: string;
-  readonly VITE_AUTH0_CLIENT_ID?: string;
 }
 
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
 
-// Types may be missing when pulling from a Git repo version; declare as any to satisfy TS.
-declare module '@auth0/auth0-react';
+// (Auth0 removed) No external auth modules declared.
 
 // Minimal typings for Electron preload bridge
 declare global {
@@ -29,6 +26,54 @@ declare global {
       settings: {
         get(): Promise<Record<string, any>>;
         set(input: Record<string, any>): Promise<Record<string, any>>;
+      };
+      profile: {
+        getSelf(): Promise<{
+          id: string;
+          authSub: string;
+          email?: string | null;
+          name?: string | null;
+          clinicName?: string | null;
+          specialty?: string | null;
+          phone?: string | null;
+          address?: string | null;
+          city?: string | null;
+          country?: string | null;
+          preferences?: Record<string, unknown> | null;
+          createdAt: string | Date;
+          updatedAt: string | Date;
+        } | null>;
+        upsertSelf(input: {
+          email?: string | null;
+          name?: string | null;
+          clinicName?: string | null;
+          specialty?: string | null;
+          phone?: string | null;
+          address?: string | null;
+          city?: string | null;
+          country?: string | null;
+          preferences?: Record<string, unknown> | null;
+        }): Promise<{
+          id: string;
+          authSub: string;
+          email?: string | null;
+          name?: string | null;
+          clinicName?: string | null;
+          specialty?: string | null;
+          phone?: string | null;
+          address?: string | null;
+          city?: string | null;
+          country?: string | null;
+          preferences?: Record<string, unknown> | null;
+          createdAt: string | Date;
+          updatedAt: string | Date;
+        }>;
+      };
+      diagnostics: {
+        neonPath(): Promise<
+          | { ok: true; path: string; exists: boolean }
+          | { ok: false; error: string }
+        >;
       };
       // Other channels exist but are not strictly typed here to keep it lightweight
       agent: any;

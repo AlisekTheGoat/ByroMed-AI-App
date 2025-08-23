@@ -96,4 +96,3 @@ model AgentEvent {
   @@index([runId])
   @@index([ts])
 }
-

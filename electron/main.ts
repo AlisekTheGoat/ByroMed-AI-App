@@ -1,13 +1,17 @@
 // electron/main.ts
-import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
+import { app, BrowserWindow, ipcMain, dialog } from "electron";
 import dotenv from "dotenv";
 import path from "path";
 import fs from "fs";
 import { spawn, ChildProcessWithoutNullStreams } from "child_process";
 import os from "os";
 import type { OpenDialogReturnValue, OpenDialogOptions } from "electron";
-import { getLocalPrisma, getNeonPrisma } from "./prisma";
-import crypto from "crypto";
+import {
+  getLocalPrisma,
+  getNeonPrisma,
+  getResolvedNeonClientPath,
+} from "./prisma";
+// Auth0 removed: no crypto required
 
 // --- pomocné flagy/cesty ---
 const IS_DEV = !!process.env.VITE_DEV_SERVER_URL || !app.isPackaged;
@@ -93,144 +97,7 @@ function broadcast(ev: AgentEvent) {
   }
 }
 
-// ----------------- AUTH0 (PKCE + custom protocol) -----------------
-// Config (env overrides allowed, fallback to provided values)
-const AUTH0_DOMAIN = process.env.AUTH0_DOMAIN || "dev-4k8r5dm2wsc1gptt.eu.auth0.com";
-const AUTH0_CLIENT_ID = process.env.AUTH0_CLIENT_ID || "DiJissNbO2EOgxe2cNlAGEehj45uqLDh";
-const AUTH0_REDIRECT_URI = "byromed://auth/callback";
-const AUTH0_SCOPE = "openid profile email";
-
-type AuthState = {
-  accessToken: string | null;
-  idToken: string | null;
-  tokenType: string | null;
-  scope: string | null;
-  expiresAt: number | null; // epoch ms
-  refreshToken?: string | null;
-};
-
-let authState: AuthState = {
-  accessToken: null,
-  idToken: null,
-  tokenType: null,
-  scope: null,
-  expiresAt: null,
-  refreshToken: null,
-};
-
-let pendingAuth: { state: string; verifier: string } | null = null;
-
-function toBase64Url(buf: Buffer) {
-  return buf
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
-}
-
-function randomBytesUrl(n = 32) {
-  return toBase64Url(crypto.randomBytes(n));
-}
-
-async function sha256(input: string) {
-  return crypto.createHash("sha256").update(input).digest();
-}
-
-async function pkceChallenge(verifier: string) {
-  const hash = await sha256(verifier);
-  return toBase64Url(hash);
-}
-
-function buildAuthorizeUrl(state: string, challenge: string) {
-  const u = new URL(`https://${AUTH0_DOMAIN}/authorize`);
-  u.searchParams.set("response_type", "code");
-  u.searchParams.set("client_id", AUTH0_CLIENT_ID);
-  u.searchParams.set("redirect_uri", AUTH0_REDIRECT_URI);
-  u.searchParams.set("scope", AUTH0_SCOPE);
-  u.searchParams.set("code_challenge_method", "S256");
-  u.searchParams.set("code_challenge", challenge);
-  u.searchParams.set("state", state);
-  return u.toString();
-}
-
-async function exchangeCodeForTokens(code: string, verifier: string) {
-  const tokenUrl = `https://${AUTH0_DOMAIN}/oauth/token`;
-  const body = new URLSearchParams();
-  body.set("grant_type", "authorization_code");
-  body.set("client_id", AUTH0_CLIENT_ID);
-  body.set("code_verifier", verifier);
-  body.set("code", code);
-  body.set("redirect_uri", AUTH0_REDIRECT_URI);
-
-  const res = await fetch(tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  });
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(`Token exchange failed: ${res.status} ${t}`);
-  }
-  const data = (await res.json()) as {
-    access_token?: string;
-    id_token?: string;
-    token_type?: string;
-    scope?: string;
-    expires_in?: number;
-    refresh_token?: string;
-  };
-  const now = Date.now();
-  authState = {
-    accessToken: data.access_token ?? null,
-    idToken: data.id_token ?? null,
-    tokenType: data.token_type ?? null,
-    scope: data.scope ?? AUTH0_SCOPE,
-    expiresAt: data.expires_in ? now + data.expires_in * 1000 - 10_000 : null, // 10s skew
-    refreshToken: data.refresh_token ?? null,
-  };
-}
-
-function decodeJwt(jwt?: string | null): any | null {
-  try {
-    if (!jwt) return null;
-    const parts = jwt.split(".");
-    if (parts.length < 2) return null;
-    const payload = parts[1];
-    const pad = payload.length % 4 === 2 ? "==" : payload.length % 4 === 3 ? "=" : "";
-    const json = Buffer.from(payload.replace(/-/g, "+").replace(/_/g, "/") + pad, "base64").toString("utf8");
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
-}
-
-async function startAuthLogin() {
-  const state = randomBytesUrl(16);
-  const verifier = randomBytesUrl(32);
-  const challenge = await pkceChallenge(verifier);
-  pendingAuth = { state, verifier };
-  const url = buildAuthorizeUrl(state, challenge);
-  await shell.openExternal(url);
-}
-
-async function handleAuthCallbackUrl(rawUrl: string) {
-  try {
-    console.log("[auth] Received callback URL:", rawUrl);
-    const u = new URL(rawUrl);
-    if (u.protocol !== "byromed:") return;
-    if (u.hostname !== "auth" || u.pathname !== "/callback") return;
-    const code = u.searchParams.get("code");
-    const state = u.searchParams.get("state");
-    if (!code || !state) throw new Error("Missing code/state");
-    if (!pendingAuth || pendingAuth.state !== state) throw new Error("Invalid state");
-    const v = pendingAuth.verifier;
-    pendingAuth = null;
-    await exchangeCodeForTokens(code, v);
-    console.log("[auth] Token exchange OK, user is authenticated.");
-  } catch (e) {
-    console.error("Auth callback failed:", e);
-  }
-}
+// Auth0 integration removed: no login flow in main process
 
 async function createWindow() {
   try {
@@ -396,40 +263,7 @@ ipcMain.handle(
   }
 );
 
-// ---- Auth IPC ----
-ipcMain.handle("auth:login", async () => {
-  await startAuthLogin();
-});
-
-ipcMain.handle("auth:logout", async () => {
-  authState = {
-    accessToken: null,
-    idToken: null,
-    tokenType: null,
-    scope: null,
-    expiresAt: null,
-    refreshToken: null,
-  };
-});
-
-ipcMain.handle("auth:getAccessToken", async (_evt, _scopes?: string[]) => {
-  if (!authState.accessToken) return null;
-  if (authState.expiresAt && Date.now() >= authState.expiresAt) {
-    // Silent refresh (not implemented for MVP). Require re-login for now.
-    return null;
-  }
-  return authState.accessToken;
-});
-
-ipcMain.handle("auth:getUser", async () => {
-  const claims = decodeJwt(authState.idToken);
-  if (!claims) return null;
-  return {
-    sub: String(claims.sub || ""),
-    email: claims.email ? String(claims.email) : undefined,
-    name: claims.name ? String(claims.name) : undefined,
-  } as const;
-});
+// Auth IPC removed
 
 // ---- Profile (Neon/Postgres via Prisma) ----
 type ProfileInput = {
@@ -444,41 +278,42 @@ type ProfileInput = {
   preferences?: Record<string, unknown> | null;
 };
 
-function requireAuthSub(): string {
-  const claims = decodeJwt(authState.idToken);
-  const sub = claims?.sub ? String(claims.sub) : "";
-  if (!sub) throw new Error("Not authenticated");
-  return sub;
-}
+// Profiles no longer tied to Auth0; use a local singleton profile key
+const LOCAL_AUTH_SUB = "local";
 
 ipcMain.handle("profile:getSelf", async () => {
   const prisma = getNeonPrisma();
-  const authSub = requireAuthSub();
+  const authSub = LOCAL_AUTH_SUB;
   const p = await prisma.profile.findUnique({ where: { authSub } });
   return p ?? null;
 });
 
 ipcMain.handle("profile:upsertSelf", async (_evt, input: ProfileInput) => {
   const prisma = getNeonPrisma();
-  const authSub = requireAuthSub();
+  const authSub = LOCAL_AUTH_SUB;
   const data: any = { ...input };
   // Normalize undefined -> null for optional fields to satisfy Prisma
   for (const k of Object.keys(data)) if (data[k] === undefined) data[k] = null;
-  const existing = await prisma.profile.findUnique({ where: { authSub } });
-  if (!existing) {
-    // seed defaults from JWT if available
-    const claims = decodeJwt(authState.idToken);
-    if (claims) {
-      if (data.email == null && claims.email) data.email = String(claims.email);
-      if (data.name == null && claims.name) data.name = String(claims.name);
-    }
-  }
   const p = await prisma.profile.upsert({
     where: { authSub },
     create: { authSub, ...data, updatedAt: new Date() },
     update: { ...data, updatedAt: new Date() },
   });
   return p;
+});
+
+// ---- Diagnostics ----
+ipcMain.handle("diagnostics:neonPath", async () => {
+  try {
+    const p = getResolvedNeonClientPath();
+    const exists = fs.existsSync(p) || fs.existsSync(p + ".js");
+    return { ok: true as const, path: p, exists };
+  } catch (e) {
+    return {
+      ok: false as const,
+      error: String(e instanceof Error ? e.message : e),
+    };
+  }
 });
 
 // Placeholder for Google sync (OAuth and API calls to be implemented).
@@ -719,10 +554,9 @@ ipcMain.handle(
 
 // Note: create the window ONLY in the primary instance (see single instance lock below)
 
-// macOS deep link handler
-app.on("open-url", async (event, url) => {
+// macOS deep link handler removed (no auth deep-linking)
+app.on("open-url", async (event, _url) => {
   event.preventDefault();
-  await handleAuthCallbackUrl(url);
 });
 
 // Single-instance handling (prevents double windows and handles deep links)
@@ -733,23 +567,10 @@ if (!gotLock) {
   // Primary instance only
   app.whenReady().then(async () => {
     await createWindow();
-    // Register custom protocol for deep links (dev vs packaged)
-    // In dev, need to pass execPath and args so macOS routes to the running Electron binary.
-    if (process.defaultApp) {
-      const exe = process.execPath;
-      const arg = path.resolve(process.argv[1]);
-      const ok = app.setAsDefaultProtocolClient("byromed", exe, [arg]);
-      console.log("[auth] Protocol register (dev)", ok ? "OK" : "FAILED", exe, arg);
-    } else {
-      const ok = app.setAsDefaultProtocolClient("byromed");
-      console.log("[auth] Protocol register (packaged)", ok ? "OK" : "FAILED");
-    }
   });
 
-  // When a second instance is launched (e.g., via byromed:// link), route to primary
-  app.on("second-instance", async (_e, argv) => {
-    const deeplink = argv.find((a) => a.startsWith("byromed://"));
-    if (deeplink) await handleAuthCallbackUrl(deeplink);
+  // When a second instance is launched, just focus the existing window (no deep link handling needed)
+  app.on("second-instance", async () => {
     const all = BrowserWindow.getAllWindows();
     if (all.length > 0) {
       const win = all[0];

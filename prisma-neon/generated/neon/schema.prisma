@@ -8,7 +8,6 @@ datasource db {
   url      = env("NEON_DATABASE_URL")
 }
 
-// Non-PHI profile stored in Neon
 model Profile {
   authSub    String   @id @map("auth_sub")
   email      String?

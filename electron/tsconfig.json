@@ -11,6 +11,6 @@
     "types": ["node"],            // <— NE "electron"
     "noEmit": false
   },
-  "include": ["./main.ts"],
+  "include": ["./main.ts", "./prisma.ts"],
   "exclude": []
 }
