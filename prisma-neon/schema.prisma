@@ -5,15 +5,67 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("NEON_DATABASE_URL")
+  url      = env("DATABASE_URL_CLOUD")
 }
 
-model Profile {
-  authSub    String   @id @map("auth_sub")
-  email      String?
-  name       String?
-  clinicName String?
-  updatedAt  DateTime @default(now()) @map("updated_at")
+/// Cloud organization (e.g., clinic or practice)
+model Organization {
+  id        String          @id @default(uuid())
+  name      String
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
 
-  @@map("Profile")
+  users     User[]
+  templates CloudTemplate[]
+}
+
+/// Cloud user (Auth0 subject as primary key)
+model User {
+  authSub        String          @id @map("auth_sub")
+  email          String?
+  name           String?
+  phone          String?
+  specialty      String?
+  address        String?
+  city           String?
+  country        String?
+  organizationId String?         @map("organization_id")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt      @map("updated_at")
+
+  organization   Organization?   @relation(fields: [organizationId], references: [id])
+  preferences    UserPreference?
+  templates      CloudTemplate[]
+
+  @@index([organizationId])
+}
+
+/// Per-user UI/settings preferences (explicit columns for key UX fields)
+model UserPreference {
+  authSub      String   @id @map("auth_sub")
+  greetingName String?
+  specialization String?
+  uiLanguage   String?
+  updatedAt    DateTime @default(now()) @map("updated_at")
+
+  user         User     @relation(fields: [authSub], references: [authSub], onDelete: Cascade)
+}
+
+/// Cloud templates metadata (content may be stored as text/JSON in future)
+model CloudTemplate {
+  id              String        @id @default(uuid())
+  name            String
+  version         Int           @default(1)
+  isActive        Boolean       @default(true) @map("is_active")
+  tags            String[]
+  ownerAuthSub    String?       @map("owner_auth_sub")
+  organizationId  String?       @map("organization_id")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt      @map("updated_at")
+
+  owner           User?         @relation(fields: [ownerAuthSub], references: [authSub])
+  organization    Organization? @relation(fields: [organizationId], references: [id])
+
+  @@index([ownerAuthSub])
+  @@index([organizationId])
 }

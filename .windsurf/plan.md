@@ -1,6 +1,6 @@
 ## ByroMed AI – Architektura, Auth a Data (MVP → Scale)
 
-Tento dokument je zdroj pravdy pro autentizaci, datovou architekturu a implementační kroky. Cílem je jednoduché MVP (1–10 lékařů) s možností růstu (1000+ uživatelů) za minimální náklady a maximální škálovatelností, klidně i kdyby to mělo stát nějakou marži. Cílem je vytvořit aplikaci, která opravdu přinese hodnotu Lékařům.
+Zdroj pravdy pro architekturu, autentizaci a data. Cíl: MVP (1–10 lékařů) → škálovatelně (1000+) s nízkými náklady, vysokou bezpečností a jasnými hranicemi PHI.
 
 ## Cíle
 
@@ -14,50 +14,28 @@ Tento dokument je zdroj pravdy pro autentizaci, datovou architekturu a implement
 
 - Electron + React + Tailwind (desktop UI)
 - Auth0 (PKCE + custom protocol)
-  - Domain: dev-4k8r5dm2wsc1gptt.eu.auth0.com
-  - Client ID: DiJissNbO2EOgxe2cNlAGEehj45uqLDh
 - Neon Postgres (cloud, Free tier) + Prisma ORM
 - Lokální DB: SQLite (plán: SQLCipher/OS keychain)
 
 ## Bezpečnost a GDPR (Data Residency)
 
 - PHI (pacienti, klinické dokumenty) NESMÍ opustit zařízení.
-- PHI je obsluhováno výhradně přes IPC v `electron/main.ts` a ukládáno lokálně .
-- Do cloudu jdou pouze:
-  - účetní/produktová metadata (uživatel, preference),
-  - šablony (metadata + obsah),
-  - necitlivá lékařská data (např. fakturační údaje, speciality – bez pacientů).
+- PHI pouze přes IPC v `electron/main.ts`, ukládáno lokálně.
+- Do cloudu jen: profil/preference uživatele, šablony (metadata+obsah), necitlivá lékařská data (bez pacientů).
 - Tokeny z Auth0 držíme v paměti v `main` procesu. Renderer k nim přistupuje jen přes IPC.
 
 ## Auth0 – PKCE + Custom Protocol
 
-- Flow: Authorization Code with PKCE.
-  - `main` otevře Auth0 Universal Login v systémovém prohlížeči.
-  - Redirect URI: `byromed://auth/callback` (v Electronu registrujeme custom protocol a handler).
-  - `main` dokončí výměnu kódu za tokeny (access/id), uloží je v paměti.
-  - `preload` vystaví `window.api.auth` pro renderer (login/logout/getAccessToken/getUser).
-- Env proměnné (renderer):
-  - VITE_AUTH0_DOMAIN=dev-4k8r5dm2wsc1gptt.eu.auth0.com
-  - VITE_AUTH0_CLIENT_ID=DiJissNbO2EOgxe2cNlAGEehj45uqLDh
-- Auth0 nastavení (Dashboard):
-  - Allowed Callback URLs: `byromed://auth/callback`
-  - Allowed Logout URLs: dle potřeby (např. `byromed://logout` není nutné; logout řešíme lokálně).
-  - Allowed Web Origins: none (desktop app), pozor na nepotřebné originy.
+- Flow: Authorization Code + PKCE v systémovém prohlížeči → `byromed://auth/callback` (custom protocol) → tokeny v paměti `main`.
+- Preload: vystaví `window.api.auth` (login/logout/getAccessToken/getUser).
+- Env (renderer): `VITE_AUTH0_DOMAIN`, `VITE_AUTH0_CLIENT_ID`.
+- Dashboard: Allowed Callback URL `byromed://auth/callback` (logout optional).
 
 ## Auth Adapter (vyměnitelný)
 
-- Rozhraní:
-  - `login(): Promise<void>`
-  - `logout(): Promise<void>`
-  - `getAccessToken(scopes?: string[]): Promise<string | null>`
-  - `getUser(): Promise<{ sub: string; email?: string; name?: string } | null>`
-- Implementace:
-  - `Auth0Adapter` (PKCE+custom protocol, produkční)
-  - `MockAdapter` (pro vývoj bez cloudu)
-- Umístění a zodpovědnosti:
-  - `electron/main.ts`: vlastní tok PKCE, práce s protokolem, držení tokenů v paměti.
-  - `electron/preload.ts`: bridge `window.api.auth` pro renderer.
-  - `src/auth/Auth.tsx`: React kontext – přepíná se mezi Mock a Auth0 adapterem dle env.
+- Rozhraní: `login()`, `logout()`, `getAccessToken()`, `getUser()`.
+- Implementace: `Auth0Adapter` (prod), `MockAdapter` (dev).
+- Umístění: `main` (tok + tokeny), `preload` (bridge), `src/auth/Auth.tsx` (React context, volba adapteru).
 
 ## Datová architektura
 
@@ -68,78 +46,17 @@ Tento dokument je zdroj pravdy pro autentizaci, datovou architekturu a implement
 
 ## Prisma + Neon (ORM)
 
-Použijeme Prisma pro cloudovou DB (Neon). V Electronu nedáváme DB přístup do rendereru; komunikace s Neon probíhá přes malý serverless backend, nebo přímo z `main` (lépe přes backend kvůli bezpečí DB přihlašovacích údajů). MVP: jednoduchý serverless (CF Worker/Vercel) validující Auth0 JWT a volající Neon.
+- Neon obsluhujeme přes Prisma. Renderer nikdy nedrží DB přístupy.
+- Preferujeme serverless proxy (CF Worker/Vercel) validující Auth0 JWT; přímý přístup z `main` je možný pro MVP, ale proxy je bezpečnější.
 
 ### Prisma schema (cloud, výřez)
 
-Pozn.: Níže je návrh pro Neon (cloud). Lokální SQLite schema pacientů již existuje odděleně.
-
-```prisma
-// prisma/schema.prisma (cloud modely – nasadit do Neon)
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
-
-generator client {
-  provider = "prisma-client-js"
-}
-
-model AppUser {
-  auth0Sub   String   @id @map("auth0_sub")
-  email      String?
-  name       String?
-  createdAt  DateTime @default(now()) @map("created_at")
-  updatedAt  DateTime @default(now()) @map("updated_at")
-  preferences UserPreferences?
-  templates  Template[]
-  DoctorInfo DoctorInfo?
-}
-
-model UserPreferences {
-  auth0Sub  String   @id @map("auth0_sub")
-  prefs     Json     @default("{}")
-  updatedAt DateTime @default(now()) @map("updated_at")
-  user      AppUser  @relation(fields: [auth0Sub], references: [auth0Sub], onDelete: Cascade)
-}
-
-model Template {
-  id            String          @id @default(uuid())
-  auth0Sub      String          @map("auth0_sub")
-  name          String
-  tags          String[]        @db.Text[]
-  isActive      Boolean         @default(true) @map("is_active")
-  latestVersion Int             @default(1) @map("latest_version")
-  createdAt     DateTime        @default(now()) @map("created_at")
-  updatedAt     DateTime        @default(now()) @map("updated_at")
-  user          AppUser         @relation(fields: [auth0Sub], references: [auth0Sub], onDelete: Cascade)
-  revisions     TemplateRevision[]
-}
-
-model TemplateRevision {
-  id         String   @id @default(uuid())
-  templateId String   @map("template_id")
-  version    Int
-  content    String   // nebo Json podle potřeby
-  createdAt  DateTime @default(now()) @map("created_at")
-  template   Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
-
-  @@unique([templateId, version])
-}
-
-// Necitlivá lékařská data (bez pacientů/PHI):
-model DoctorInfo {
-  auth0Sub     String   @id @map("auth0_sub")
-  specialization String?
-  licenseId    String?
-  clinicName   String?
-  address      String?
-  phone        String?
-  billingEmail String?
-  updatedAt    DateTime @default(now()) @map("updated_at")
-  user         AppUser  @relation(fields: [auth0Sub], references: [auth0Sub], onDelete: Cascade)
-}
-```
+Výřez modelů (Neon; lokální PHI schema je samostatně v SQLite):
+- AppUser: `auth0Sub` (PK), `email`, `name`, timestamps; relations: `preferences`, `templates`, `DoctorInfo`.
+- UserPreferences: `auth0Sub` (PK), `prefs` (jsonb), `updatedAt`, FK → AppUser.
+- Template: `id` (uuid), `auth0Sub`, `name`, `tags[]`, `isActive`, `latestVersion`, timestamps; relations: FK → AppUser, `revisions[]`.
+- TemplateRevision: `id`, `templateId`, `version` (unique per template), `content`, `createdAt`.
+- DoctorInfo: `auth0Sub` (PK), `specialization`, `licenseId`, `clinicName`, `address`, `phone`, `billingEmail`, `updatedAt`, FK → AppUser.
 
 ### SQL DDL (alternativa/rychlý start)
 
@@ -147,12 +64,7 @@ Viz předchozí sekce – tabulky `app_user`, `user_preferences`, `template`, `t
 
 ## Serverless backend (Neon proxy)
 
-- Validace Auth0 JWT (JWKS), poté CRUD nad Neon přes Prisma/driver:
-  - `GET /me` → upsert `app_user` dle `sub`.
-  - `GET/PUT /preferences` (jsonb)
-  - `GET/POST /templates`, `GET/PUT/DELETE /templates/:id`
-  - `GET/POST /templates/:id/revisions`
-- Důvod: nechceme přímé DB přihlašovací údaje v desktopové app. Backend je levný (free tier) a bezpečnější.
+- Validace Auth0 JWT (JWKS) → CRUD nad Neon: `/me` (upsert user), `/preferences`, `/templates`, `/templates/:id`, `/templates/:id/revisions`. Důvod: žádné DB přístupy v desktopu; levné a bezpečné.
 
 ## IPC hranice a lokální data
 
@@ -167,23 +79,12 @@ Viz předchozí sekce – tabulky `app_user`, `user_preferences`, `template`, `t
 
 ## Implementační kroky (prakticky)
 
-1. Auth0 PKCE + custom protocol
-   - Zaregistrovat `byromed://auth/callback` v Electron `main`.
-   - `main`: otevřít login, zpracovat callback, držet tokeny v paměti.
-   - `preload`: `window.api.auth.{login,logout,getAccessToken,getUser}`.
-   - `Auth.tsx`: použít IPC adapter, fallback na Mock bez env.
-2. Neon + Prisma
-   - Vytvořit Neon DB, `DATABASE_URL` uložit jako secret backendu.
-   - V backendu nasadit Prisma klienta a migrace.
-3. Backend (CF Worker/Vercel)
-   - Middleware JWT (Auth0), CRUD endpointy (viz výše).
-4. Preference sync
-   - Při startu (pokud přihlášen) stáhnout a sloučit s lokálními (`window.api.settings`).
-   - Uložení → lokálně i do cloudu (best‑effort).
-5. Šablony
-   - Metadata+obsah držet v Neonu, možnost lokální cache pro offline.
-6. PHI
-   - Pacienti a dokumenty jen lokálně, žádné logování PHI.
+- Auth0 PKCE + custom protocol: registrovat `byromed://auth/callback`; `main` drží tokeny; `preload` vystaví `window.api.auth`; `Auth.tsx` volí adapter (Mock/Prod).
+- Neon + Prisma: vytvořit DB, nastavit secret `DATABASE_URL`, nasadit klienta a migrace v backendu.
+- Backend (CF Worker/Vercel): JWT middleware (Auth0), CRUD endpointy.
+- Preference sync: start → stáhnout/sloučit; save → lokálně i cloud (best‑effort).
+- Šablony: v Neonu (metadata+obsah), volitelná lokální cache pro offline.
+- PHI: pouze lokálně; žádné logování PHI.
 
 ## Change Log
 
@@ -608,3 +509,124 @@ If a change requires loosening any rule, document the rationale and add a task t
 - Started `npm run dev` (concurrently runs Vite + Electron watchers).
 - Electron main/preload watchers report 0 errors; Electron launched against Vite URL.
 - Proceeding with manual UI sanity checks.
+
+## UI Update – Header Greeting (2025-08-23 08:15)
+
+- Implemented personalized greeting in `src/components/Header.tsx`.
+- Fetches profile via `window.api.profile.getSelf()` (Neon, non-PHI) on mount.
+- Fallback priority for name: `preferences.greetingName` → `profile.name` → `"Doctor"`.
+- Ensures title prefix: adds `Dr.` if name doesn't already start with `Dr.`.
+- Specialization suffix: uses `preferences.specialization` → `profile.specialty` if present, rendered as `• Specialization`.
+- Non-blocking: failures are ignored; header renders without greeting.
+- Styling: subtle text on the right, hidden on XS screens; conforms to medical design system.
+
+## Data Update – Prisma Schemas (2025-08-23 09:05)
+
+- Created new local PHI schema `prisma/schema.local.prisma` using SQLite for on-device data (models: `Patient`, `Template`, `ExportedDocument`, `AgentRun`, `AgentEvent`).
+- Updated cloud schema `prisma-neon/schema.prisma` to use `DATABASE_URL_CLOUD` and define models: `Organization`, `User` (Auth0 `sub`), `UserPreference` (fields `greetingName`, `specialization`, `uiLanguage`), and `CloudTemplate`.
+- Adjusted `package.json` script `prisma:generate:local` to target the new local schema; Neon client remains generated to `prisma-neon/generated/neon`.
+
+### Runbook
+
+- Env variables expected:
+  - `DATABASE_URL_LOCAL` for SQLite (e.g., `file:./dev.phi.db`).
+  - `DATABASE_URL_CLOUD` for Neon Postgres.
+- Generate clients:
+  - `npm run prisma:generate` (runs local + neon).
+- Migrations:
+  - Local: pending script update (t3) — will add `prisma:migrate:local:sqlite` against `schema.local.prisma`.
+
+## App State Summary (2025-08-24 21:22)
+
+- Auth: MVP runs without external auth. Profile IPC uses a fixed `authSub = "local"`. Auth0 remains planned but is not required for local dev.
+- Cloud DB: Neon Postgres (`prisma-neon/schema.prisma`) with `User` and `UserPreference`. IPC handlers `profile:getSelf` and `profile:upsertSelf` map to this schema and return a stable profile shape to the renderer.
+- Local DB: SQLite via `prisma/schema.local.prisma` for all PHI (patients, documents, agent runs/events, templates). Access only through Electron IPC.
+- IPC & Security: `contextIsolation: true`, `sandbox: true`; renderer uses only `window.api.*` from `electron/preload.ts`.
+- UI: Reusable `Toast` component (`src/components/Toast.tsx`) portals to `document.body` (no layout shift). Integrated in `Profile.tsx` and `Settings.tsx`. Patients page shows consistent toasts and can be refactored to use the component.
+- Design System: Tailwind medical palette with dark mode, Inter/Montserrat typography, accessible forms and buttons.
+
+## Maintenance – Plan compaction (2025-08-24 21:30)
+
+- Compacted opening sections while preserving headings/subheadings: intro, Služby/technologie, GDPR, Auth0 flow, Auth Adapter.
+- Removed non-essential specifics (Auth0 domain/Client ID), tightened wording and bullets for clarity.
+- Kept authoritative content below and earlier “App State Summary (2025-08-24 21:22)”.
+
+## Maintenance – Patients toast refactor (2025-08-24 21:39)
+
+- Patients page (`src/pages/Patients.tsx`) now uses reusable `Toast` component (`src/components/Toast.tsx`) that portals to `document.body` to avoid layout shift.
+- Removed manual `setTimeout` dismissals; `Toast` handles auto-dismiss (`duration=3000ms`) and calls `onClose` to clear state.
+- Inline toast markup removed; styling and dark mode are unified across Profile, Settings, and Patients pages.
+
+## Auth0 PKCE – Preload + React wiring (2025-08-24 22:07)
+
+- Exposed `window.api.auth` in `electron/preload.ts` with: `login`, `logout`, `getStatus`, `getAccessToken`, `getUser`, and `onChanged` (broadcast listener for `auth:changed`).
+- Updated renderer typings to match preload API: `src/types/preload.d.ts`, `src/types/global.d.ts`, `src/env.d.ts`.
+- Replaced `src/auth/Auth.tsx` no-auth stub with an IPC-backed provider. It bootstraps with `getStatus()`, subscribes to `onChanged`, and drives UI auth state. Includes a safe mock fallback if `api.auth` is unavailable in dev.
+- Next actions:
+  - Register custom protocol `byromed://` in electron-builder (`package.json`) and call `app.setAsDefaultProtocolClient` at runtime. Ensure redirect `byromed://auth/callback` remains allowed in Auth0.
+  - End-to-end test: login → fetch profile → update preferences → logout.
+  - Investigate intermittent "Step is still running" message during login; likely from event pipeline timing in the login window or IPC broadcast.
+
+## Auth Guard + Login Route (2025-08-24 22:26)
+
+- Added route guard in `src/Router.tsx` using `useAuth()` (`RequireAuth` component). All app routes now require authentication.
+- Created `src/pages/Login.tsx` with a single "Sign in with Auth0" button calling `useAuth().login()`. After success, user is redirected to intended route.
+- Routing: `/login` is public; everything else is under `RequireAuth` + `LayoutWrapper`.
+- Styling follows Tailwind-based design system; dark mode compatible.
+
+## Profile Sync – Renderer subscriptions (2025-08-24 22:45)
+
+- Implemented live profile subscriptions in renderer using `window.api.profile.onChanged`.
+- Files updated:
+  - `src/pages/Settings.tsx` – Subscribes on mount and merges incoming profile/preference fields into the existing form state (prefers `preferences.greetingName`, `preferences.specialization`, `preferences.uiLanguage`; also syncs `email`, `phone`, `address`, `city`, `country`, `name`). Cleans up the subscription on unmount.
+  - `src/pages/Profile.tsx` – Subscribes on mount and replaces the local `profile` state with the incoming payload for real-time reflection. Cleans up the subscription on unmount.
+- Typings: Reuse existing preload typings (`src/types/preload.d.ts`, `src/types/global.d.ts`, `src/env.d.ts`). No schema or type changes required.
+- Flow: `profile:upsertSelf` in the renderer triggers Neon update in `electron/main.ts` → main broadcasts `profile:changed` → `electron/preload.ts` forwards to renderer subscribers via `onChanged`.
+- Test plan:
+  - Open two app windows; edit and save profile in one. The other should update in real time.
+  - In Settings, verify name/email/phone/address/city/country/preference fields adjust after an external profile change.
+
+## Auth0 Metadata Sync + Online-Only Enforcement (2025-08-24 23:05)
+
+- Summary:
+  - Added best-effort synchronization of user preferences with Auth0 Management API (both `user_metadata.preferences` and `app_metadata.preferences`).
+  - Enforced online-only startup: app checks connectivity at `app.whenReady()` and quits with an error if offline.
+
+- Implementation (main process `electron/main.ts`):
+  - New helpers: `getMgmtToken()` (Client Credentials), `auth0GetUserMetadata()`, `auth0PatchUserMetadata()`, `trySyncAuth0Metadata()`.
+  - `profile:getSelf`: returns Neon profile merged with Auth0 metadata prefs (if available). Merge order: Neon → `user_metadata.preferences` → `app_metadata.preferences`.
+  - `profile:upsertSelf`: after DB upsert, pushes preferences to both Auth0 metadata objects under `preferences` key.
+  - `isOnline()`: probes `https://AUTH0_DOMAIN/.well-known/openid-configuration` and `https://www.google.com/generate_204`; if both fail, show error and `app.quit()`.
+
+- Environment variables (optional but recommended for sync):
+  - `AUTH0_MGMT_CLIENT_ID`
+  - `AUTH0_MGMT_CLIENT_SECRET`
+  - Uses existing `VITE_AUTH0_DOMAIN` for audience: `https://<domain>/api/v2/`.
+  - Behavior: if any are missing, metadata sync is skipped silently; app continues normally.
+
+- IPC & typings impact:
+  - No new IPC channels were added; existing `profile:getSelf` and `profile:upsertSelf` semantics are extended transparently.
+  - No changes required in `electron/preload.ts` or renderer typings; UI continues to use `window.api.profile` as before.
+
+- Testing:
+  - Ensure you are online. Start the app; verify it opens. Disconnect network and restart; verify an error dialog appears and the app quits.
+  - With management credentials set, update preferences in Settings and save. Confirm that Auth0 user profile reflects the `preferences` object in both `user_metadata` and `app_metadata`.
+  - Call `profile:getSelf` (e.g., refresh the page) and verify merged preferences include values from Auth0 metadata if different.
+
+- Notes:
+  - All Auth0 calls are best-effort and non-blocking for the UI. Failures are logged with `[auth0]` warnings but do not hard-fail profile flows.
+  - Preferences are shallow-merged; future work can add conflict resolution strategies and selective fields.
+
+## Online-Only Enforcement Removed (2025-08-24 23:59)
+
+- Summary:
+  - Removed startup connectivity gate. The app no longer requires an online check at launch.
+  - Rationale: Auth0 login flow already inherently requires internet; we should not block the app globally. This also allows offline usage for local-only features.
+
+- Changes:
+  - Deleted `isOnline()` helper and removed its call in `app.whenReady()` inside `electron/main.ts`.
+  - Startup now directly calls `createWindow()`.
+
+- Notes:
+  - Metadata sync remains best-effort and only runs when online and management credentials are present.
+  - Login to Auth0 still requires connectivity; renderer/UI handles the flow and errors gracefully.

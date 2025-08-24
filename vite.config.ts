@@ -4,8 +4,8 @@ import { resolve } from 'path';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
-  // Load env variables based on the current mode
-  const env = loadEnv(mode, process.cwd(), '');
+  // Load ONLY VITE_ prefixed env variables for the client
+  const env = loadEnv(mode, process.cwd(), 'VITE_');
   
   return {
     plugins: [
@@ -96,9 +96,9 @@ export default defineConfig(({ mode }) => {
       devSourcemap: mode === 'development',
     },
     
-    // Environment variables that will be available in the client
+    // Environment variables exposed to the client
+    // Note: access client env via import.meta.env.VITE_* in renderer code
     define: {
-      'process.env': { ...env },
       __APP_VERSION__: JSON.stringify(process.env.npm_package_version),
     },
     

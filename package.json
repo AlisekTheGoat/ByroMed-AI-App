@@ -14,10 +14,13 @@
     "build:renderer": "vite build",
     "build:electron": "tsc -p electron/tsconfig.json && tsc -p electron/tsconfig.preload.json",
     "build": "npm run clean && npm run build:renderer && npm run build:electron && electron-builder",
-    "prisma:generate:local": "prisma generate --schema prisma/schema.prisma",
+    "prisma:generate:local": "prisma generate --schema prisma/schema.local.prisma",
     "prisma:generate:neon": "prisma generate --schema prisma-neon/schema.prisma",
     "prisma:generate": "npm run prisma:generate:local && npm run prisma:generate:neon",
-    "prisma:migrate:local": "prisma migrate dev --schema prisma/schema.prisma",
+    "prisma:migrate:local": "prisma migrate dev --schema prisma/schema.local.prisma",
+    "prisma:push:neon": "prisma db push --schema prisma-neon/schema.prisma",
+    "typecheck": "tsc -p tsconfig.json && tsc -p electron/tsconfig.json && tsc -p electron/tsconfig.preload.json",
+    "test": "node --test",
     "postinstall": "npm run prisma:generate"
   },
   "repository": {

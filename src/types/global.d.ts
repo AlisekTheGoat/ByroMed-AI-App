@@ -10,10 +10,24 @@ declare global {
         onEvent(cb: (e: any) => void): () => void;
       };
       auth: {
-        login(): Promise<void>;
-        logout(): Promise<void>;
+        login(): Promise<{
+          isAuthenticated: boolean;
+          expiresAt: number | null;
+          user: { sub: string; email?: string; name?: string } | null;
+        }>;
+        logout(): Promise<{ ok: true }>;
+        getStatus(): Promise<{
+          isAuthenticated: boolean;
+          expiresAt: number | null;
+          user: { sub: string; email?: string; name?: string } | null;
+        }>;
         getAccessToken(scopes?: string[]): Promise<string | null>;
         getUser(): Promise<{ sub: string; email?: string; name?: string } | null>;
+        onChanged(cb: (s: {
+          isAuthenticated: boolean;
+          expiresAt: number | null;
+          user: { sub: string; email?: string; name?: string } | null;
+        }) => void): () => void;
       };
       patients: {
         list(page?: number, pageSize?: number): Promise<{
@@ -133,6 +147,21 @@ declare global {
           createdAt: string | Date;
           updatedAt: string | Date;
         }>;
+        onChanged(cb: (p: {
+          id: string;
+          authSub: string;
+          email?: string | null;
+          name?: string | null;
+          clinicName?: string | null;
+          specialty?: string | null;
+          phone?: string | null;
+          address?: string | null;
+          city?: string | null;
+          country?: string | null;
+          preferences?: Record<string, unknown> | null;
+          createdAt: string | Date;
+          updatedAt: string | Date;
+        }) => void): () => void;
       };
     };
   }

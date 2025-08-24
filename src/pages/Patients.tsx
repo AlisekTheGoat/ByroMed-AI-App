@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { PatientService } from "../services/patientService";
 import { exportToCSV, parseCSV } from "../lib/csvUtils";
+import Toast from "../components/Toast";
 
 // Define the Patient interface
 interface Patient {
@@ -66,6 +67,13 @@ const Patients = () => {
     notes: "",
   });
 
+  const [toast, setToast] = useState<
+    | {
+        type: "success" | "error";
+        message: string;
+      }
+    | null
+  >(null);
   const pageSize = 10;
 
   useEffect(() => {
@@ -159,6 +167,14 @@ const Patients = () => {
 
   return (
     <div className="space-y-6">
+      {toast && (
+        <Toast
+          type={toast.type}
+          message={toast.message}
+          onClose={() => setToast(null)}
+        />
+      )}
+
       {/* Header Section */}
       <div className="flex items-center justify-between">
         <div>
@@ -687,7 +703,11 @@ const Patients = () => {
                       !newPatient.lastName ||
                       !newPatient.birthNumber
                     ) {
-                      alert("Vyplňte prosím Jméno, Příjmení a Rodné číslo.");
+                      setToast({
+                        type: "error",
+                        message:
+                          "Vyplňte prosím Jméno, Příjmení a Rodné číslo.",
+                      });
                       return;
                     }
                     try {
@@ -727,9 +747,16 @@ const Patients = () => {
                         notes: "",
                       });
                       await loadPatients();
+                      setToast({
+                        type: "success",
+                        message: "Pacient byl úspěšně vytvořen.",
+                      });
                     } catch (err) {
                       console.error("Error creating patient", err);
-                      alert("Nepodařilo se vytvořit pacienta.");
+                      setToast({
+                        type: "error",
+                        message: "Nepodařilo se vytvořit pacienta.",
+                      });
                     } finally {
                       setIsLoading(false);
                     }

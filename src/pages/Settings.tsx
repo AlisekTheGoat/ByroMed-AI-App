@@ -1,5 +1,6 @@
 import React, { ChangeEvent, useEffect, useState } from "react";
 import { useTheme, Theme } from "../hooks/useTheme";
+import Toast from "../components/Toast";
 
 const Settings = () => {
   const { theme, setTheme, fontSize, setFontSize, fontFamily, setFontFamily } =
@@ -8,6 +9,9 @@ const Settings = () => {
     name: "MUDr. Jan Novotný",
     email: "jan.novotny@byromed.cz",
     phone: "+420 123 456 789",
+    address: "",
+    city: "",
+    country: "",
     specialization: "Praktický lékař",
     language: "cs",
     notifications: {
@@ -39,6 +43,7 @@ const Settings = () => {
   };
 
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [toast, setToast] = useState<null | { type: "success" | "error"; message: string }>(null);
 
   // Load settings from persistent storage on mount
   useEffect(() => {
@@ -59,6 +64,51 @@ const Settings = () => {
           },
           theme: (s.theme as string) ?? prev.theme,
         }));
+
+        // Also load cloud profile (Neon) and merge preferred fields
+        try {
+          const prof = await window.api.profile.getSelf();
+          if (mounted && prof) {
+            const prefs = (prof.preferences ?? {}) as Record<string, unknown>;
+            setFormData((prev) => ({
+              ...prev,
+              name:
+                (typeof prefs.greetingName === "string" && prefs.greetingName)
+                  ? (prefs.greetingName as string)
+                  : (typeof prof.name === "string" && prof.name) ? (prof.name as string) : prev.name,
+              email:
+                (typeof prof.email === "string" && prof.email)
+                  ? (prof.email as string)
+                  : prev.email,
+              phone:
+                (typeof prof.phone === "string" && prof.phone)
+                  ? (prof.phone as string)
+                  : prev.phone,
+              address:
+                (typeof prof.address === "string" && prof.address)
+                  ? (prof.address as string)
+                  : prev.address,
+              city:
+                (typeof prof.city === "string" && prof.city)
+                  ? (prof.city as string)
+                  : prev.city,
+              country:
+                (typeof prof.country === "string" && prof.country)
+                  ? (prof.country as string)
+                  : prev.country,
+              specialization:
+                (typeof prefs.specialization === "string" && prefs.specialization)
+                  ? (prefs.specialization as string)
+                  : prev.specialization,
+              language:
+                (typeof prefs.uiLanguage === "string" && prefs.uiLanguage)
+                  ? (prefs.uiLanguage as string)
+                  : prev.language,
+            }));
+          }
+        } catch (e) {
+          console.warn("profile: load failed", e);
+        }
       } catch (e) {
         console.warn("settings: load failed", e);
       }
@@ -68,6 +118,53 @@ const Settings = () => {
     };
   }, [setTheme]);
 
+  // Subscribe to live profile changes and merge into form state
+  useEffect(() => {
+    const unsubscribe = window.api.profile.onChanged((prof) => {
+      const prefs = (prof?.preferences ?? {}) as Record<string, unknown>;
+      setFormData((prev) => ({
+        ...prev,
+        name:
+          (typeof prefs.greetingName === "string" && prefs.greetingName)
+            ? (prefs.greetingName as string)
+            : (typeof prof?.name === "string" && prof.name) ? (prof.name as string) : prev.name,
+        email:
+          (typeof prof?.email === "string" && prof.email)
+            ? (prof.email as string)
+            : prev.email,
+        phone:
+          (typeof prof?.phone === "string" && prof.phone)
+            ? (prof.phone as string)
+            : prev.phone,
+        address:
+          (typeof prof?.address === "string" && prof.address)
+            ? (prof.address as string)
+            : prev.address,
+        city:
+          (typeof prof?.city === "string" && prof.city)
+            ? (prof.city as string)
+            : prev.city,
+        country:
+          (typeof prof?.country === "string" && prof.country)
+            ? (prof.country as string)
+            : prev.country,
+        specialization:
+          (typeof prefs.specialization === "string" && prefs.specialization)
+            ? (prefs.specialization as string)
+            : prev.specialization,
+        language:
+          (typeof prefs.uiLanguage === "string" && prefs.uiLanguage)
+            ? (prefs.uiLanguage as string)
+            : prev.language,
+      }));
+    });
+    return () => {
+      try {
+        unsubscribe?.();
+      } catch {}
+    };
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     try {
@@ -75,14 +172,44 @@ const Settings = () => {
       const saved = await window.api.settings.set(payload);
       // If theme changed in form, ensure hook updated
       if (saved.theme && saved.theme !== theme) setTheme(saved.theme as Theme);
+
+      // Best-effort push to cloud profile preferences (Neon)
+      try {
+        await window.api.profile.upsertSelf({
+          email: formData.email,
+          name: formData.name,
+          phone: formData.phone,
+          address: formData.address,
+          city: formData.city,
+          country: formData.country,
+          specialty: formData.specialization,
+          preferences: {
+            greetingName: formData.name,
+            specialization: formData.specialization,
+            uiLanguage: formData.language,
+          },
+        });
+      } catch (e) {
+        console.warn("profile: upsert failed", e);
+      }
       setSavedAt(Date.now());
+      setToast({ type: "success", message: "Nastavení bylo úspěšně uloženo." });
     } catch (err) {
       console.error("settings: save failed", err);
+      setToast({ type: "error", message: "Uložení nastavení se nezdařilo." });
     }
   };
 
   return (
     <div className="space-y-6">
+      {toast && (
+        <Toast
+          type={toast.type}
+          message={toast.message}
+          duration={3000}
+          onClose={() => setToast(null)}
+        />
+      )}
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
           Nastavení
@@ -152,6 +279,63 @@ const Settings = () => {
                       name="phone"
                       id="phone"
                       value={formData.phone}
+                      onChange={handleChange}
+                      className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm dark:bg-gray-800 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="sm:col-span-6">
+                  <label
+                    htmlFor="address"
+                    className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
+                    Adresa
+                  </label>
+                  <div className="mt-1">
+                    <input
+                      type="text"
+                      name="address"
+                      id="address"
+                      value={formData.address}
+                      onChange={handleChange}
+                      className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm dark:bg-gray-800 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="sm:col-span-3">
+                  <label
+                    htmlFor="city"
+                    className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
+                    Město
+                  </label>
+                  <div className="mt-1">
+                    <input
+                      type="text"
+                      name="city"
+                      id="city"
+                      value={formData.city}
+                      onChange={handleChange}
+                      className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm dark:bg-gray-800 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="sm:col-span-3">
+                  <label
+                    htmlFor="country"
+                    className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
+                    Země
+                  </label>
+                  <div className="mt-1">
+                    <input
+                      type="text"
+                      name="country"
+                      id="country"
+                      value={formData.country}
                       onChange={handleChange}
                       className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm dark:bg-gray-800 dark:text-white"
                     />

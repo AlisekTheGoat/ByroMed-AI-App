@@ -48,8 +48,6 @@ prisma/dev.db-journal
 # Misc
 *.bak
 
-node_modules
-dist
 .DS_Store
 *.log
 

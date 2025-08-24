@@ -43,6 +43,44 @@ function onEvent(cb: (e: AgentEvent) => void) {
 }
 
 contextBridge.exposeInMainWorld("api", {
+  auth: {
+    login() {
+      return ipcRenderer.invoke("auth:login") as Promise<{
+        isAuthenticated: boolean;
+        expiresAt: number | null;
+        user: { sub: string; email?: string; name?: string } | null;
+      }>;
+    },
+    logout() {
+      return ipcRenderer.invoke("auth:logout") as Promise<{ ok: true }>;
+    },
+    getStatus() {
+      return ipcRenderer.invoke("auth:getStatus") as Promise<{
+        isAuthenticated: boolean;
+        expiresAt: number | null;
+        user: { sub: string; email?: string; name?: string } | null;
+      }>;
+    },
+    getAccessToken() {
+      return ipcRenderer.invoke("auth:getAccessToken") as Promise<string | null>;
+    },
+    getUser() {
+      return ipcRenderer.invoke("auth:getUser") as Promise<
+        | { sub: string; email?: string; name?: string }
+        | null
+      >;
+    },
+    onChanged(cb: (s: {
+      isAuthenticated: boolean;
+      expiresAt: number | null;
+      user: { sub: string; email?: string; name?: string } | null;
+    }) => void) {
+      const channel = "auth:changed";
+      const handler = (_: Electron.IpcRendererEvent, s: any) => cb(s);
+      ipcRenderer.on(channel, handler);
+      return () => ipcRenderer.removeListener(channel, handler);
+    },
+  },
   agent: {
     run(input: { text?: string; language?: string }) {
       return ipcRenderer.invoke("agent:run", input) as Promise<{
@@ -223,6 +261,26 @@ contextBridge.exposeInMainWorld("api", {
         createdAt: string | Date;
         updatedAt: string | Date;
       }>;
+    },
+    onChanged(cb: (p: {
+      id: string;
+      authSub: string;
+      email?: string | null;
+      name?: string | null;
+      clinicName?: string | null;
+      specialty?: string | null;
+      phone?: string | null;
+      address?: string | null;
+      city?: string | null;
+      country?: string | null;
+      preferences?: Record<string, unknown> | null;
+      createdAt: string | Date;
+      updatedAt: string | Date;
+    }) => void) {
+      const channel = "profile:changed";
+      const handler = (_: Electron.IpcRendererEvent, p: any) => cb(p);
+      ipcRenderer.on(channel, handler);
+      return () => ipcRenderer.removeListener(channel, handler);
     },
   },
   diagnostics: {

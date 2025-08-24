@@ -46,13 +46,14 @@ export function getResolvedNeonClientPath() {
   return neonClientModulePath;
 }
 
-// Local Postgres (PHI data)
+// Local PHI data via @prisma/client generated from prisma/schema.local.prisma (SQLite)
+// Expects env DATABASE_URL_LOCAL (e.g., file:./dev.phi.db)
 export function getLocalPrisma(): PrismaClient {
   if (!localPrisma) localPrisma = new PrismaClient();
   return localPrisma;
 }
 
-// Neon Postgres (non-PHI marketing/user mgmt)
+// Neon Postgres (non-PHI: users, preferences, templates). Expects env DATABASE_URL_CLOUD.
 export function getNeonPrisma(): NeonPrismaClient {
   if (!neonPrisma) neonPrisma = new NeonClientCtor();
   return neonPrisma;

@@ -1,17 +1,18 @@
 // electron/main.ts
-import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
 import dotenv from "dotenv";
 import path from "path";
 import fs from "fs";
 import { spawn, ChildProcessWithoutNullStreams } from "child_process";
 import os from "os";
+import crypto from "crypto";
 import type { OpenDialogReturnValue, OpenDialogOptions } from "electron";
 import {
   getLocalPrisma,
   getNeonPrisma,
   getResolvedNeonClientPath,
 } from "./prisma";
-// Auth0 removed: no crypto required
+// Auth0 PKCE helpers and state
 
 // --- pomocné flagy/cesty ---
 const IS_DEV = !!process.env.VITE_DEV_SERVER_URL || !app.isPackaged;
@@ -97,7 +98,355 @@ function broadcast(ev: AgentEvent) {
   }
 }
 
-// Auth0 integration removed: no login flow in main process
+// ---- Auth0 PKCE (embedded login, tokens in-memory) ----
+type AuthTokens = {
+  access_token: string;
+  id_token?: string;
+  refresh_token?: string;
+  token_type: string;
+  expires_at: number; // epoch ms
+  scope?: string;
+};
+
+type AuthUser = {
+  sub: string;
+  email?: string;
+  name?: string;
+};
+
+let TOKENS: AuthTokens | null = null;
+let USER: AuthUser | null = null;
+let loginWindow: BrowserWindow | null = null;
+let pendingState: string | null = null;
+let pendingVerifier: string | null = null;
+
+const AUTH0_DOMAIN = (process.env.VITE_AUTH0_DOMAIN || "").trim();
+const AUTH0_CLIENT_ID = (process.env.VITE_AUTH0_CLIENT_ID || "").trim();
+const AUTH0_REDIRECT_URI = "byromed://auth/callback"; // intercepted inside embedded window
+const AUTH0_SCOPES = "openid profile email offline_access"; // offline_access enables refresh_token
+const AUTH0_MGMT_CLIENT_ID = (process.env.AUTH0_MGMT_CLIENT_ID || "").trim();
+const AUTH0_MGMT_CLIENT_SECRET = (process.env.AUTH0_MGMT_CLIENT_SECRET || "").trim();
+const AUTH0_MGMT_AUDIENCE = `https://${AUTH0_DOMAIN}/api/v2/`;
+
+type MgmtTokens = { access_token: string; expires_at: number };
+let MGMT_TOKENS: MgmtTokens | null = null;
+
+async function getMgmtToken(): Promise<string | null> {
+  // Optional: only if credentials provided
+  if (!AUTH0_DOMAIN || !AUTH0_MGMT_CLIENT_ID || !AUTH0_MGMT_CLIENT_SECRET) return null;
+  const now = Date.now() + 30_000;
+  if (MGMT_TOKENS && now < MGMT_TOKENS.expires_at) return MGMT_TOKENS.access_token;
+  const res = await fetch(`https://${AUTH0_DOMAIN}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      grant_type: "client_credentials",
+      client_id: AUTH0_MGMT_CLIENT_ID,
+      client_secret: AUTH0_MGMT_CLIENT_SECRET,
+      audience: AUTH0_MGMT_AUDIENCE,
+    }),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    console.warn("[auth0] mgmt token failed:", res.status, t);
+    return null;
+  }
+  const data = (await res.json()) as { access_token: string; expires_in: number };
+  MGMT_TOKENS = {
+    access_token: data.access_token,
+    expires_at: Date.now() + Math.max(1, data.expires_in) * 1000,
+  };
+  return MGMT_TOKENS.access_token;
+}
+
+async function auth0GetUserMetadata(authSub: string): Promise<{
+  user_metadata?: Record<string, unknown>;
+  app_metadata?: Record<string, unknown>;
+} | null> {
+  const token = await getMgmtToken();
+  if (!token) return null;
+  const url = `https://${AUTH0_DOMAIN}/api/v2/users/${encodeURIComponent(authSub)}?fields=user_metadata,app_metadata&include_fields=true`;
+  const res = await fetch(url, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const data = (await res.json()) as { user_metadata?: any; app_metadata?: any };
+  return { user_metadata: data.user_metadata, app_metadata: data.app_metadata };
+}
+
+async function auth0PatchUserMetadata(authSub: string, body: {
+  user_metadata?: Record<string, unknown> | null;
+  app_metadata?: Record<string, unknown> | null;
+}): Promise<boolean> {
+  const token = await getMgmtToken();
+  if (!token) return false;
+  const url = `https://${AUTH0_DOMAIN}/api/v2/users/${encodeURIComponent(authSub)}`;
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    console.warn("[auth0] patch metadata failed:", res.status, t);
+    return false;
+  }
+  return true;
+}
+
+function cleanPrefs(prefs: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!prefs || typeof prefs !== "object") return null;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(prefs)) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === "string" && v.trim() === "") continue;
+    out[k] = v;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+async function trySyncAuth0Metadata(authSub: string, prefs: Record<string, unknown> | null | undefined) {
+  if (!authSub || authSub === LOCAL_AUTH_SUB) return; // skip local
+  const clean = cleanPrefs(prefs ?? null);
+  // Push the same preferences under a namespaced key to both user_metadata and app_metadata
+  const body = {
+    user_metadata: clean ? { preferences: clean } : null,
+    app_metadata: clean ? { preferences: clean } : null,
+  } as const;
+  try {
+    await auth0PatchUserMetadata(authSub, body);
+  } catch (e) {
+    console.warn("[auth0] sync metadata error", e);
+  }
+}
+
+function b64url(input: Buffer) {
+  return input
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function genCodeVerifier(): string {
+  return b64url(crypto.randomBytes(64));
+}
+
+function genCodeChallenge(verifier: string): string {
+  return b64url(crypto.createHash("sha256").update(verifier).digest());
+}
+
+function decodeJwtWithoutVerify<T = Record<string, unknown>>(jwt?: string): T | null {
+  if (!jwt) return null;
+  const parts = jwt.split(".");
+  if (parts.length < 2) return null;
+  try {
+    const payload = parts[1];
+    const padded = payload.padEnd(payload.length + (4 - (payload.length % 4)) % 4, "=");
+    const json = Buffer.from(padded.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+    return JSON.parse(json) as T;
+  } catch {
+    return null;
+  }
+}
+
+function isTokenExpired(tok: AuthTokens | null): boolean {
+  if (!tok) return true;
+  const now = Date.now() + 30_000; // 30s skew
+  return now >= tok.expires_at;
+}
+
+function broadcastAuthChanged() {
+  const status = {
+    isAuthenticated: !!TOKENS && !isTokenExpired(TOKENS),
+    expiresAt: TOKENS?.expires_at ?? null,
+    user: USER,
+  } as const;
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send("auth:changed", status);
+  }
+}
+
+async function exchangeCodeForTokens(code: string, verifier: string): Promise<void> {
+  const url = `https://${AUTH0_DOMAIN}/oauth/token`;
+  const body = {
+    grant_type: "authorization_code",
+    client_id: AUTH0_CLIENT_ID,
+    code_verifier: verifier,
+    code,
+    redirect_uri: AUTH0_REDIRECT_URI,
+  };
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Token exchange failed: ${res.status} ${text}`);
+  }
+  const data = (await res.json()) as {
+    access_token: string;
+    id_token?: string;
+    refresh_token?: string;
+    token_type: string;
+    expires_in: number;
+    scope?: string;
+  };
+  const expires_at = Date.now() + (Math.max(1, data.expires_in) * 1000);
+  TOKENS = {
+    access_token: data.access_token,
+    id_token: data.id_token,
+    refresh_token: data.refresh_token,
+    token_type: data.token_type,
+    scope: data.scope,
+    expires_at,
+  };
+  const claims = decodeJwtWithoutVerify<any>(data.id_token);
+  USER = claims && typeof claims === "object" && claims.sub ? {
+    sub: String(claims.sub),
+    email: typeof claims.email === "string" ? claims.email : undefined,
+    name: typeof claims.name === "string" ? claims.name : undefined,
+  } : null;
+}
+
+async function refreshTokensIfNeeded(): Promise<void> {
+  if (!TOKENS) return;
+  if (!isTokenExpired(TOKENS)) return;
+  const rt = TOKENS.refresh_token;
+  if (!rt) {
+    // No refresh token; force logout
+    TOKENS = null;
+    USER = null;
+    broadcastAuthChanged();
+    return;
+  }
+  const url = `https://${AUTH0_DOMAIN}/oauth/token`;
+  const body = {
+    grant_type: "refresh_token",
+    client_id: AUTH0_CLIENT_ID,
+    refresh_token: rt,
+  };
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    // Refresh failed; clear session
+    TOKENS = null;
+    USER = null;
+    broadcastAuthChanged();
+    return;
+  }
+  const data = (await res.json()) as {
+    access_token: string;
+    id_token?: string;
+    refresh_token?: string;
+    token_type: string;
+    expires_in: number;
+    scope?: string;
+  };
+  const expires_at = Date.now() + (Math.max(1, data.expires_in) * 1000);
+  TOKENS = {
+    access_token: data.access_token,
+    id_token: data.id_token ?? TOKENS.id_token,
+    refresh_token: data.refresh_token ?? TOKENS.refresh_token,
+    token_type: data.token_type,
+    scope: data.scope ?? TOKENS.scope,
+    expires_at,
+  };
+  const claims = decodeJwtWithoutVerify<any>(TOKENS.id_token);
+  USER = claims && typeof claims === "object" && claims.sub ? {
+    sub: String(claims.sub),
+    email: typeof claims.email === "string" ? claims.email : undefined,
+    name: typeof claims.name === "string" ? claims.name : undefined,
+  } : USER;
+}
+
+function buildAuthorizeUrl(): string {
+  const state = b64url(crypto.randomBytes(16));
+  pendingState = state;
+  const verifier = genCodeVerifier();
+  pendingVerifier = verifier;
+  const challenge = genCodeChallenge(verifier);
+  const url = new URL(`https://${AUTH0_DOMAIN}/authorize`);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("client_id", AUTH0_CLIENT_ID);
+  url.searchParams.set("redirect_uri", AUTH0_REDIRECT_URI);
+  url.searchParams.set("scope", AUTH0_SCOPES);
+  url.searchParams.set("code_challenge", challenge);
+  url.searchParams.set("code_challenge_method", "S256");
+  url.searchParams.set("state", state);
+  // Optional UX tuning
+  url.searchParams.set("prompt", "login");
+  url.searchParams.set("max_age", "0");
+  return url.toString();
+}
+
+async function startEmbeddedLogin(): Promise<void> {
+  if (!AUTH0_DOMAIN || !AUTH0_CLIENT_ID) {
+    throw new Error("Auth0 not configured. Set VITE_AUTH0_DOMAIN and VITE_AUTH0_CLIENT_ID in env.");
+  }
+  if (loginWindow && !loginWindow.isDestroyed()) {
+    try { loginWindow.focus(); } catch {}
+    return;
+  }
+  loginWindow = new BrowserWindow({
+    width: 480,
+    height: 700,
+    modal: false,
+    show: true,
+    title: "ByroMed – Sign in",
+    backgroundColor: "#ffffff",
+    webPreferences: {
+      preload: PRELOAD_JS,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: IS_DEV ? false : true,
+      webSecurity: true,
+    },
+  });
+  // Prevent new windows/popups
+  loginWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  // Open external links in default browser (e.g., privacy policy)
+  loginWindow.webContents.setWindowOpenHandler((details) => {
+    if (details.url && /^(https?:)/i.test(details.url)) {
+      shell.openExternal(details.url);
+    }
+    return { action: "deny" };
+  });
+
+  const handleUrl = async (targetUrl: string) => {
+    if (!targetUrl.startsWith(AUTH0_REDIRECT_URI)) return;
+    try {
+      const u = new URL(targetUrl);
+      const code = u.searchParams.get("code");
+      const state = u.searchParams.get("state");
+      if (!code) throw new Error("Missing code in callback");
+      if (!state || state !== pendingState) throw new Error("State mismatch");
+      const verifier = pendingVerifier;
+      pendingVerifier = null;
+      pendingState = null;
+      if (!verifier) throw new Error("No PKCE verifier in memory");
+      await exchangeCodeForTokens(code, verifier);
+      broadcastAuthChanged();
+    } catch (e) {
+      console.error("[auth] callback handling failed:", e);
+    } finally {
+      if (loginWindow && !loginWindow.isDestroyed()) loginWindow.close();
+      loginWindow = null;
+    }
+  };
+
+  loginWindow.webContents.on("will-redirect", (_e, url) => handleUrl(url));
+  loginWindow.webContents.on("will-navigate", (_e, url) => handleUrl(url));
+  loginWindow.on("closed", () => {
+    loginWindow = null;
+  });
+
+  await loginWindow.loadURL(buildAuthorizeUrl());
+}
 
 async function createWindow() {
   try {
@@ -263,7 +612,45 @@ ipcMain.handle(
   }
 );
 
-// Auth IPC removed
+// ---- Auth IPC ----
+ipcMain.handle("auth:login", async () => {
+  await startEmbeddedLogin();
+  const status = {
+    isAuthenticated: !!TOKENS && !isTokenExpired(TOKENS),
+    expiresAt: TOKENS?.expires_at ?? null,
+    user: USER,
+  } as const;
+  return status;
+});
+
+ipcMain.handle("auth:logout", async () => {
+  TOKENS = null;
+  USER = null;
+  pendingState = null;
+  pendingVerifier = null;
+  broadcastAuthChanged();
+  return { ok: true } as const;
+});
+
+ipcMain.handle("auth:getStatus", async () => {
+  await refreshTokensIfNeeded();
+  return {
+    isAuthenticated: !!TOKENS && !isTokenExpired(TOKENS),
+    expiresAt: TOKENS?.expires_at ?? null,
+    user: USER,
+  } as const;
+});
+
+ipcMain.handle("auth:getAccessToken", async () => {
+  await refreshTokensIfNeeded();
+  if (!TOKENS || isTokenExpired(TOKENS)) return null;
+  return TOKENS.access_token;
+});
+
+ipcMain.handle("auth:getUser", async () => {
+  await refreshTokensIfNeeded();
+  return USER;
+});
 
 // ---- Profile (Neon/Postgres via Prisma) ----
 type ProfileInput = {
@@ -278,28 +665,165 @@ type ProfileInput = {
   preferences?: Record<string, unknown> | null;
 };
 
-// Profiles no longer tied to Auth0; use a local singleton profile key
+// Profiles prefer current Auth0 subject; fallback to local singleton
 const LOCAL_AUTH_SUB = "local";
+function currentAuthSub(): string {
+  return USER?.sub || LOCAL_AUTH_SUB;
+}
 
 ipcMain.handle("profile:getSelf", async () => {
   const prisma = getNeonPrisma();
-  const authSub = LOCAL_AUTH_SUB;
-  const p = await prisma.profile.findUnique({ where: { authSub } });
-  return p ?? null;
+  const authSub = currentAuthSub();
+  const u = await prisma.user.findUnique({
+    where: { authSub },
+    include: { preferences: true },
+  });
+  if (!u) return null;
+  const prefs = u.preferences;
+  // Map Neon models to backward-compatible shape expected by renderer
+  const base = {
+    id: u.authSub,
+    authSub: u.authSub,
+    email: u.email ?? null,
+    name: u.name ?? null,
+    clinicName: null,
+    specialty: u.specialty ?? null,
+    phone: u.phone ?? null,
+    address: u.address ?? null,
+    city: u.city ?? null,
+    country: u.country ?? null,
+    preferences: prefs
+      ? {
+          greetingName: prefs.greetingName ?? undefined,
+          specialization: prefs.specialization ?? undefined,
+          uiLanguage: prefs.uiLanguage ?? undefined,
+        }
+      : null,
+    createdAt: u.createdAt,
+    updatedAt: u.updatedAt,
+  } as const;
+  // Merge with Auth0 metadata if available (best-effort)
+  try {
+    if (authSub !== LOCAL_AUTH_SUB) {
+      const md = await auth0GetUserMetadata(authSub);
+      const userMeta = (md?.user_metadata?.preferences ?? null) as Record<string, unknown> | null;
+      const appMeta = (md?.app_metadata?.preferences ?? null) as Record<string, unknown> | null;
+      const mergedPrefs = { ...(base.preferences ?? {}), ...(userMeta ?? {}), ...(appMeta ?? {}) } as Record<string, unknown>;
+      return { ...base, preferences: Object.keys(mergedPrefs).length ? mergedPrefs : base.preferences };
+    }
+  } catch (e) {
+    console.warn("[auth0] read metadata failed", e);
+  }
+  return base;
 });
 
 ipcMain.handle("profile:upsertSelf", async (_evt, input: ProfileInput) => {
   const prisma = getNeonPrisma();
-  const authSub = LOCAL_AUTH_SUB;
-  const data: any = { ...input };
-  // Normalize undefined -> null for optional fields to satisfy Prisma
-  for (const k of Object.keys(data)) if (data[k] === undefined) data[k] = null;
-  const p = await prisma.profile.upsert({
+  const authSub = currentAuthSub();
+
+  // Build User update payload from supported fields
+  const userData: {
+    email?: string | null;
+    name?: string | null;
+    phone?: string | null;
+    specialty?: string | null;
+    address?: string | null;
+    city?: string | null;
+    country?: string | null;
+  } = {};
+  if (Object.prototype.hasOwnProperty.call(input, "email")) {
+    userData.email = input.email ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "name")) {
+    userData.name = input.name ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "phone")) {
+    userData.phone = input.phone ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "specialty")) {
+    userData.specialty = input.specialty ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "address")) {
+    userData.address = input.address ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "city")) {
+    userData.city = input.city ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "country")) {
+    userData.country = input.country ?? null;
+  }
+
+  await prisma.user.upsert({
     where: { authSub },
-    create: { authSub, ...data, updatedAt: new Date() },
-    update: { ...data, updatedAt: new Date() },
+    create: { authSub, ...userData },
+    update: { ...userData },
   });
-  return p;
+
+  // Preferences mapping (optional)
+  const prefsIn = (input.preferences ?? null) as
+    | { greetingName?: unknown; specialization?: unknown; uiLanguage?: unknown }
+    | null;
+  if (prefsIn) {
+    const prefData = {
+      greetingName:
+        typeof prefsIn.greetingName === "string" ? prefsIn.greetingName : null,
+      specialization:
+        typeof prefsIn.specialization === "string"
+          ? prefsIn.specialization
+          : null,
+      uiLanguage:
+        typeof prefsIn.uiLanguage === "string" ? prefsIn.uiLanguage : null,
+      updatedAt: new Date(),
+    };
+    await prisma.userPreference.upsert({
+      where: { authSub },
+      create: { authSub, ...prefData },
+      update: { ...prefData },
+    });
+  }
+
+  // Return current state
+  const u = await prisma.user.findUnique({
+    where: { authSub },
+    include: { preferences: true },
+  });
+  if (!u) return null;
+  const prefs = u.preferences;
+  const profile = {
+    id: u.authSub,
+    authSub: u.authSub,
+    email: u.email ?? null,
+    name: u.name ?? null,
+    clinicName: null,
+    specialty: u.specialty ?? null,
+    phone: u.phone ?? null,
+    address: u.address ?? null,
+    city: u.city ?? null,
+    country: u.country ?? null,
+    preferences: prefs
+      ? {
+          greetingName: prefs.greetingName ?? undefined,
+          specialization: prefs.specialization ?? undefined,
+          uiLanguage: prefs.uiLanguage ?? undefined,
+        }
+      : null,
+    createdAt: u.createdAt,
+    updatedAt: u.updatedAt,
+  } as const;
+
+  // Best-effort push of preferences to Auth0 metadata (requires mgmt credentials)
+  try {
+    await trySyncAuth0Metadata(authSub, profile.preferences as Record<string, unknown> | null | undefined);
+  } catch (e) {
+    console.warn("[auth0] sync after upsert failed", e);
+  }
+
+  // Broadcast profile change to all renderer windows
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send("profile:changed", profile);
+  }
+
+  return profile;
 });
 
 // ---- Diagnostics ----
